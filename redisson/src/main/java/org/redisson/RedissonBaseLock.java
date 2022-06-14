@@ -119,32 +119,37 @@ public abstract class RedissonBaseLock extends RedissonExpirable implements RLoc
         return id + ":" + threadId;
     }
 
+    // 处理续期
     private void renewExpiration() {
+        // 根据entryName获取ExpirationEntry实例，如果为空，说明在cancelExpirationRenewal()方法已经被移除，一般是解锁的时候触发
         ExpirationEntry ee = EXPIRATION_RENEWAL_MAP.get(getEntryName());
         if (ee == null) {
             return;
         }
-        
+        // 新建一个定时任务，这个就是看门狗的实现，io.netty.util.Timeout是Netty结合时间轮使用的定时任务实例
         Timeout task = commandExecutor.getConnectionManager().newTimeout(new TimerTask() {
             @Override
             public void run(Timeout timeout) throws Exception {
+                // 这里是重复外面的那个逻辑
                 ExpirationEntry ent = EXPIRATION_RENEWAL_MAP.get(getEntryName());
                 if (ent == null) {
                     return;
                 }
+                // 获取ExpirationEntry中首个线程ID，如果为空说明调用过cancelExpirationRenewal()方法清空持有的线程重入计数，一般是锁已经释放的场景
                 Long threadId = ent.getFirstThreadId();
                 if (threadId == null) {
                     return;
                 }
-                
+                // 向Redis异步发送续期的命令
                 CompletionStage<Boolean> future = renewExpirationAsync(threadId);
                 future.whenComplete((res, e) -> {
+                    // 抛出异常，续期失败，只打印日志和直接终止任务
                     if (e != null) {
                         log.error("Can't update lock " + getRawName() + " expiration", e);
                         EXPIRATION_RENEWAL_MAP.remove(getEntryName());
                         return;
                     }
-                    
+                    // 返回true证明续期成功，则递归调用续期方法（重新调度自己），续期失败说明对应的锁已经不存在，直接返回，不再递归
                     if (res) {
                         // reschedule itself
                         renewExpiration();
@@ -152,20 +157,25 @@ public abstract class RedissonBaseLock extends RedissonExpirable implements RLoc
                         cancelExpirationRenewal(null);
                     }
                 });
-            }
+            }// 这里的执行频率为leaseTime转换为ms单位下的三分之一，由于leaseTime初始值为-1的情况下才会进入续期逻辑，那么这里的执行频率为lockWatchdogTimeout的三分之一
         }, internalLockLeaseTime / 3, TimeUnit.MILLISECONDS);
-        
+        // ExpirationEntry实例持有调度任务实例
         ee.setTimeout(task);
     }
-    
+
+    // 基于线程ID定时调度和续期
     protected void scheduleExpirationRenewal(long threadId) {
+        // 新建一个ExpirationEntry记录线程重入计数
         ExpirationEntry entry = new ExpirationEntry();
         ExpirationEntry oldEntry = EXPIRATION_RENEWAL_MAP.putIfAbsent(getEntryName(), entry);
         if (oldEntry != null) {
+            // 当前进行的当前线程重入加锁
             oldEntry.addThreadId(threadId);
         } else {
+            // 当前进行的当前线程首次加锁
             entry.addThreadId(threadId);
             try {
+                // 首次新建ExpirationEntry需要触发续期方法，记录续期的任务句柄
                 renewExpiration();
             } finally {
                 if (Thread.currentThread().isInterrupted()) {
@@ -311,9 +321,11 @@ public abstract class RedissonBaseLock extends RedissonExpirable implements RLoc
 
     @Override
     public RFuture<Void> unlockAsync(long threadId) {
+        // 真正的内部解锁的方法，执行解锁的Lua脚本
         RFuture<Boolean> future = unlockInnerAsync(threadId);
-
+        // 返回的RFuture如果持有的结果为true，说明解锁成功，返回NULL说明线程ID异常，加锁和解锁的客户端线程不是同一个线程
         CompletionStage<Void> f = future.handle((opStatus, e) -> {
+            // 取消看门狗的续期任务
             cancelExpirationRenewal(threadId);
 
             if (e != null) {
