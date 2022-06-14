@@ -174,14 +174,15 @@ public class RedissonLock extends RedissonBaseLock {
             // 实质是异步执行加锁Lua脚本
             ttlRemainingFuture = tryLockInnerAsync(waitTime, leaseTime, unit, threadId, RedisCommands.EVAL_LONG);
         } else {
-            // 否则，已经过期了,传参变为新的时间（续期后）
+            // 否则，已经过期了,传参变为新的时间（续期后）internalLockLeaseTime是读取的配置文件里的时间
             ttlRemainingFuture = tryLockInnerAsync(waitTime, internalLockLeaseTime,
                     TimeUnit.MILLISECONDS, threadId, RedisCommands.EVAL_LONG);
         }
         CompletionStage<Long> f = ttlRemainingFuture.thenApply(ttlRemaining -> {
-            // lock acquired
+            // lock acquired,如果ttlRemainingFuture是null的话，就是获得锁了
             if (ttlRemaining == null) {
                 if (leaseTime > 0) {
+                    //有剩余时间的话，内部锁剩余时间就是leaseTime
                     internalLockLeaseTime = unit.toMillis(leaseTime);
                 } else {
                     //看门狗续期
@@ -205,7 +206,7 @@ public class RedissonLock extends RedissonBaseLock {
      */
     <T> RFuture<T> tryLockInnerAsync(long waitTime, long leaseTime, TimeUnit unit, long threadId, RedisStrictCommand<T> command) {
         return evalWriteAsync(getRawName(), LongCodec.INSTANCE, command,
-                // 1.如果缓存中的key不存在，则执行 hincrby 命令(hincrby key UUID+threadId 1), 设值重入次数1
+                // 1.如果缓存中的key不存在，则执行 hincrby 命令(hincrby key UUID+threadId 1，创建并+1), 设值重入次数1
                 // 然后通过 pexpire 命令设置锁的过期时间(即锁的租约时间)
                 // 返回空值 nil ，表示获取锁成功
                 "if (redis.call('exists', KEYS[1]) == 0) then " +
@@ -226,12 +227,12 @@ public class RedissonLock extends RedissonBaseLock {
 
     @Override
     public boolean tryLock(long waitTime, long leaseTime, TimeUnit unit) throws InterruptedException {
-        // 获取等锁的最长时间
+        //获取等锁的最长时间
         long time = unit.toMillis(waitTime);
         long current = System.currentTimeMillis();
         //取得当前线程id（判断是否可重入锁的关键）
         long threadId = Thread.currentThread().getId();
-        // 【核心点1】尝试获取锁，若返回值为null，则表示已获取到锁，返回的ttl就是key的剩余存活时间
+        //【核心点1】尝试获取锁，若返回值为null，则表示已获取到锁，返回的ttl就是key的剩余存活时间
         Long ttl = tryAcquire(waitTime, leaseTime, unit, threadId);
         // lock acquired
         if (ttl == null) {
