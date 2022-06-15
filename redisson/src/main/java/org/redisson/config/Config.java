@@ -68,6 +68,12 @@ public class Config {
 
     private EventLoopGroup eventLoopGroup;
 
+    /**
+     * lockWatchdogTimeout参数只有在没有使用leaseTimeout参数定义的成功获取到锁的场景（简单来说就是不设置时限的加锁）下生效，
+     * 如果看门狗在下一个lockWatchdogTimeout周期内不进行续期，那么锁就会过期释放
+     * （从源码上看，每三分之一lockWatchdogTimeout就会执行一次续期任务，
+     * 每次通过pexpire把KEY的存活周期延长lockWatchdogTimeout），lockWatchdogTimeout的默认值为30000，也就是30秒。
+     */
     private long lockWatchdogTimeout = 30 * 1000;
 
     private boolean checkLockSyncedSlaves = true;

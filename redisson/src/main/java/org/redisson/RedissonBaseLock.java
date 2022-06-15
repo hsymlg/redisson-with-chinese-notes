@@ -46,8 +46,10 @@ import java.util.concurrent.locks.Condition;
  */
 public abstract class RedissonBaseLock extends RedissonExpirable implements RLock {
 
+    // ExpirationEntry为锁对象维护的实体，每一个ExpirationEntry中都存了一个线程计数器，用来实现可重入锁
     public static class ExpirationEntry {
 
+        // 线程ID -> 线程重入的次数
         private final Map<Long, Integer> threadIds = new LinkedHashMap<>();
         private volatile Timeout timeout;
 
@@ -55,6 +57,7 @@ public abstract class RedissonBaseLock extends RedissonExpirable implements RLoc
             super();
         }
 
+        // 这个方法主要记录线程重入的计数
         public synchronized void addThreadId(long threadId) {
             threadIds.compute(threadId, (t, counter) -> {
                 counter = Optional.ofNullable(counter).orElse(0);
@@ -95,12 +98,15 @@ public abstract class RedissonBaseLock extends RedissonExpirable implements RLoc
 
     private static final Logger log = LoggerFactory.getLogger(RedissonBaseLock.class);
 
+    // 存放entryName -> ExpirationEntry，用于获取当前entryName的线程重入计数器和续期任务
     private static final ConcurrentMap<String, ExpirationEntry> EXPIRATION_RENEWAL_MAP = new ConcurrentHashMap<>();
     protected long internalLockLeaseTime;
 
+    // ID，唯一标识，是一个UUID
     final String id;
     final String entryName;
 
+    // 命令异步执行器实例
     final CommandAsyncExecutor commandExecutor;
 
     public RedissonBaseLock(CommandAsyncExecutor commandExecutor, String name) {
@@ -154,10 +160,13 @@ public abstract class RedissonBaseLock extends RedissonExpirable implements RLoc
                         // reschedule itself
                         renewExpiration();
                     } else {
+                        //redis里面的键不存在,关闭续约
                         cancelExpirationRenewal(null);
                     }
                 });
-            }// 这里的执行频率为leaseTime转换为ms单位下的三分之一，由于leaseTime初始值为-1的情况下才会进入续期逻辑，那么这里的执行频率为lockWatchdogTimeout的三分之一
+            }// 这里的执行频率为leaseTime转换为ms单位下的三分之一，由于leaseTime初始值为-1的情况下才会进入续期逻辑，
+            // 那么这里的执行频率为lockWatchdogTimeout的三分之一,如果用户不传键值的有效期的话，默认为30s，
+            // 通过下面代码可以看到该任务平均10s执行一次，也就是线程加锁后是10s续命一次。
         }, internalLockLeaseTime / 3, TimeUnit.MILLISECONDS);
         // ExpirationEntry实例持有调度任务实例
         ee.setTimeout(task);
@@ -185,6 +194,8 @@ public abstract class RedissonBaseLock extends RedissonExpirable implements RLoc
         }
     }
 
+    //如果该键值存在(仍在加锁/仍在执行锁内业务)时，重新设置Redis中该键值的失效时间internalLockLeaseTime(默认为30s)，并返回1
+    //如果检测到Redis中不存在该键值，则直接返回0。
     protected CompletionStage<Boolean> renewExpirationAsync(long threadId) {
         return evalWriteAsync(getRawName(), LongCodec.INSTANCE, RedisCommands.EVAL_BOOLEAN,
                 "if (redis.call('hexists', KEYS[1], ARGV[2]) == 1) then " +
@@ -209,6 +220,7 @@ public abstract class RedissonBaseLock extends RedissonExpirable implements RLoc
         if (threadId == null || task.hasNoThreads()) {
             Timeout timeout = task.getTimeout();
             if (timeout != null) {
+                // 如果有续约的定时任务，直接关闭
                 timeout.cancel();
             }
             EXPIRATION_RENEWAL_MAP.remove(getEntryName());

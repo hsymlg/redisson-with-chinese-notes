@@ -47,14 +47,18 @@ public class RedissonLock extends RedissonBaseLock {
 
     protected long internalLockLeaseTime;
 
+    // 锁释放事件订阅发布相关
     protected final LockPubSub pubSub;
 
     final CommandAsyncExecutor commandExecutor;
 
     public RedissonLock(CommandAsyncExecutor commandExecutor, String name) {
         super(commandExecutor, name);
+        //执行lua脚本的executor
         this.commandExecutor = commandExecutor;
+        //内部lock剩余时间，初始化的时候是读配置文件的
         this.internalLockLeaseTime = commandExecutor.getConnectionManager().getCfg().getLockWatchdogTimeout();
+        // 初始化LockPubSub实例，用于订阅和发布锁释放的事件
         this.pubSub = commandExecutor.getConnectionManager().getSubscribeService().getLockPubSub();
     }
 
@@ -91,32 +95,46 @@ public class RedissonLock extends RedissonBaseLock {
         lock(leaseTime, unit, true);
     }
 
+    /**
+     * 获取锁，不指定等待时间，只指定锁的最大持有时间
+     * 通过interruptibly参数配置支持中断
+     */
     private void lock(long leaseTime, TimeUnit unit, boolean interruptibly) throws InterruptedException {
         long threadId = Thread.currentThread().getId();
+        // 尝试获取锁，返回的ttl为空代表获取锁成功，返回的ttl代表已经存在的KEY的剩余存活时间
         Long ttl = tryAcquire(-1, leaseTime, unit, threadId);
         // lock acquired
         if (ttl == null) {
             return;
         }
-
+        // 订阅redisson_lock__channel:{$KEY}，其实本质的目的是为了客户端通过Redis的订阅发布，感知到解锁的事件
+        // 这个方法会在LockPubSub中注册一个entryName -> RedissonLockEntry的哈希映射，
+        // RedissonLockEntry实例中存放着RPromise<RedissonLockEntry>结果，一个信号量形式的锁和订阅方法重入计数器
+        // 下面的死循环中的getEntry()或者RPromise<RedissonLockEntry>#getNow()就是从这个映射中获取的
         CompletableFuture<RedissonLockEntry> future = subscribe(threadId);
         pubSub.timeout(future);
         RedissonLockEntry entry;
+        // 同步订阅执行，获取注册订阅Channel的响应，区分是否支持中断
         if (interruptibly) {
             entry = commandExecutor.getInterrupted(future);
         } else {
             entry = commandExecutor.get(future);
         }
-
+        // 走到下面的循环说明返回的ttl不为空，也就是Redis已经存在对应的KEY，
+        // 有其他客户端已经获取到锁，此客户端线程的调用需要阻塞等待获取锁
         try {
             while (true) {
+                // 死循环中尝试获取锁
                 ttl = tryAcquire(-1, leaseTime, unit, threadId);
-                // lock acquired
+                // 返回的ttl为空，说明获取到锁，跳出死循环，这个死循环或者抛出中断异常，或者获取到锁成功break跳出，没有其他方式
                 if (ttl == null) {
                     break;
                 }
 
-                // waiting for message
+                // 这个ttl来源于等待存在的锁的KEY的存活时间，直接使用许可为0的信号量进行阻塞等待，下面的几个分支判断都是大同小异，只是有的支持超时时间，有的支持中断
+                // 有的是永久阻塞直到锁释放事件订阅LockPubSub的onMessage()方法回调激活getLatch().release()进行解锁才会往下走
+                // 这里可以学到一个特殊的技巧，Semaphore(0)，信号量的许可设置为0，首个调用acquire()的线程会被阻塞，
+                // 直到其他线程调用此信号量的release()方法才会解除阻塞，类似于一个CountDownLatch(1)的效果
                 if (ttl >= 0) {
                     try {
                         entry.getLatch().tryAcquire(ttl, TimeUnit.MILLISECONDS);

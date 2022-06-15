@@ -342,6 +342,11 @@ public class Redisson implements RedissonClient {
         return new RedissonMap<K, V>(codec, commandExecutor, name, this, options, writeBehindService);
     }
 
+    /**
+     * getLock 返回的实际上是其实现类 RedissonLock 的实例
+     * @param name - name of object
+     * @return RLock 是继承自 java.util.concurrent.locks.Lock 的一个 interface
+     */
     @Override
     public RLock getLock(String name) {
         return new RedissonLock(commandExecutor, name);

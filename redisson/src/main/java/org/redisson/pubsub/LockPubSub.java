@@ -41,11 +41,13 @@ public class LockPubSub extends PublishSubscribe<RedissonLockEntry> {
     @Override
     protected void onMessage(RedissonLockEntry value, Long message) {
         if (message.equals(UNLOCK_MESSAGE)) {
+            // 从监听器队列取监听线程执行监听回调
             Runnable runnableToExecute = value.getListeners().poll();
             if (runnableToExecute != null) {
                 runnableToExecute.run();
             }
-
+            // getLatch()返回的是Semaphore，信号量，此处是释放信号量
+            // 释放信号量后会唤醒等待的entry.getLatch().tryAcquire去再次尝试申请锁
             value.getLatch().release();
         } else if (message.equals(READ_UNLOCK_MESSAGE)) {
             while (true) {
