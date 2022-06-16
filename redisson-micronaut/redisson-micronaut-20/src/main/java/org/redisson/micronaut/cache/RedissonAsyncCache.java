@@ -70,7 +70,11 @@ public class RedissonAsyncCache implements AsyncCache<RMap<Object, Object>> {
             if (existingValue.isPresent()) {
                 return CompletableFuture.completedFuture(existingValue.get());
             } else {
+                //以Async结尾并且没有指定Executor的方法会使用ForkJoinPool.commonPool()作为它的线程池执行异步代码
+                //supplyAsync表示创建带返回值的异步任务的，相当于ExecutorService submit(Callable<T> task) 方法，
+                //runAsync表示创建无返回值的异步任务，相当于ExecutorService submit(Runnable task)方法，这两方法的效果跟submit是一样的
                 return CompletableFuture.supplyAsync(supplier, executorService)
+                                        //thenApply 表示某个任务执行完成后执行的动作，即回调方法，会将该任务的执行结果即方法返回值作为入参传递到回调方法中
                                         .thenApply(value -> {
                                             put(key, value);
                                             return value;

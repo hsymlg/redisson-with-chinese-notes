@@ -68,6 +68,7 @@ abstract class PublishSubscribe<E extends PubSubEntry<E>> {
     // 在LockPubSub中注册一个entryName -> RedissonLockEntry的哈希映射，
     // RedissonLockEntry实例中存放着RPromise<RedissonLockEntry>结果，一个信号量形式的锁和订阅方法重入计数器
     public CompletableFuture<E> subscribe(String entryName, String channelName) {
+        //pubsubService中有一个简单的无冲突解决的AsyncSemaphore数据结构，这里只是简单从中获取一个
         AsyncSemaphore semaphore = service.getSemaphore(new ChannelName(channelName));
         CompletableFuture<E> newPromise = new CompletableFuture<>();
 
