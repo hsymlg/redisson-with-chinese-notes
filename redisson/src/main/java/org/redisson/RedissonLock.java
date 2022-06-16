@@ -137,6 +137,7 @@ public class RedissonLock extends RedissonBaseLock {
                 // 直到其他线程调用此信号量的release()方法才会解除阻塞，类似于一个CountDownLatch(1)的效果
                 if (ttl >= 0) {
                     try {
+                        //tryAcquire尝试在特定时间内获取1个许可，可中断
                         entry.getLatch().tryAcquire(ttl, TimeUnit.MILLISECONDS);
                     } catch (InterruptedException e) {
                         if (interruptibly) {
@@ -146,18 +147,22 @@ public class RedissonLock extends RedissonBaseLock {
                     }
                 } else {
                     if (interruptibly) {
+                        //获取一个许可，在提供一个许可前一直将线程阻塞，除非线程被中断。
                         entry.getLatch().acquire();
                     } else {
+                        //获取许可，不可以被打断
                         entry.getLatch().acquireUninterruptibly();
                     }
                 }
             }
         } finally {
+            // 获取到锁或者抛出中断异常，退订redisson_lock__channel:{$KEY}，不再关注解锁事件
             unsubscribe(entry, threadId);
         }
 //        get(lockAsync(leaseTime, unit));
     }
-    
+
+    // 这是一个异步转同步的方法，类似于FutureTask#get()，关键看调用的tryAcquireAsync()方法
     private Long tryAcquire(long waitTime, long leaseTime, TimeUnit unit, long threadId) {
         return get(tryAcquireAsync(waitTime, leaseTime, unit, threadId));
     }
