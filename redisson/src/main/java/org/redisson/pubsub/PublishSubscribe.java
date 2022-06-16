@@ -65,15 +65,19 @@ abstract class PublishSubscribe<E extends PubSubEntry<E>> {
         service.timeout(promise, timeout);
     }
 
+    //entryName是uuid+{$KEY}
+    //channelName是redisson_lock__channel:{$KEY}
     // 在LockPubSub中注册一个entryName -> RedissonLockEntry的哈希映射，
     // RedissonLockEntry实例中存放着RPromise<RedissonLockEntry>结果，一个信号量形式的锁和订阅方法重入计数器
     public CompletableFuture<E> subscribe(String entryName, String channelName) {
         //pubsubService中有一个简单的无冲突解决的AsyncSemaphore数据结构，这里只是简单从中获取一个
         AsyncSemaphore semaphore = service.getSemaphore(new ChannelName(channelName));
         CompletableFuture<E> newPromise = new CompletableFuture<>();
-
+        //获取一个许可，在提供一个许可前一直将线程阻塞，除非线程被中断。
         semaphore.acquire(() -> {
+            //isDone方法检查计算是否完成
             if (newPromise.isDone()) {
+                //释放许可
                 semaphore.release();
                 return;
             }
