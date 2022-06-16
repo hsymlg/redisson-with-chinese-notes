@@ -31,6 +31,8 @@ import java.util.concurrent.ConcurrentMap;
  * @author Nikita Koksharov
  *
  */
+//注意，这是个发布订阅的抽象类，对于锁的发布订阅，来自他的继承类LockPubSub
+//范型<E extends PubSubEntry<E>> 类似LockPubSub extends PublishSubscribe<RedissonLockEntry> ，E就代表RedissonLockEntry
 abstract class PublishSubscribe<E extends PubSubEntry<E>> {
 
     private final ConcurrentMap<String, E> entries = new ConcurrentHashMap<>();
@@ -77,7 +79,7 @@ abstract class PublishSubscribe<E extends PubSubEntry<E>> {
         semaphore.acquire(() -> {
             //isDone方法检查计算是否完成
             if (newPromise.isDone()) {
-                //释放许可
+                //释放许可，然后返回
                 semaphore.release();
                 return;
             }
@@ -95,10 +97,11 @@ abstract class PublishSubscribe<E extends PubSubEntry<E>> {
                 });
                 return;
             }
-
+            //创建一个E,在lock中是RedissonLockEntry
             E value = createEntry(newPromise);
+            //获得1个许可
             value.acquire();
-
+            //判断entryName是否存在，不存在则插入，返回null；存在返回旧值
             E oldValue = entries.putIfAbsent(entryName, value);
             if (oldValue != null) {
                 oldValue.acquire();
