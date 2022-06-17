@@ -112,10 +112,12 @@ public class RedissonLock extends RedissonBaseLock {
         // RedissonLockEntry实例中存放着RPromise<RedissonLockEntry>结果，一个信号量形式的锁和订阅方法重入计数器
         // 下面的死循环中的getEntry()或者RPromise<RedissonLockEntry>#getNow()就是从这个映射中获取的
         CompletableFuture<RedissonLockEntry> future = subscribe(threadId);
+        //实际上内部是netty的HashedWheelTimer-newTimeout，触发的延迟任务，时间是config.getTimeout() + config.getRetryInterval() * config.getRetryAttempts();
         pubSub.timeout(future);
         RedissonLockEntry entry;
         // 同步订阅执行，获取注册订阅Channel的响应，区分是否支持中断
         if (interruptibly) {
+            //内部就是CompletableFuture<V>的get方法,阻塞线程，直到计算完成(订阅成功)返回结果
             entry = commandExecutor.getInterrupted(future);
         } else {
             entry = commandExecutor.get(future);

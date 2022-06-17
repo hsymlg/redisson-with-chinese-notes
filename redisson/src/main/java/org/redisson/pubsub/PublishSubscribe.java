@@ -69,17 +69,17 @@ abstract class PublishSubscribe<E extends PubSubEntry<E>> {
 
     //entryName是uuid+{$KEY}
     //channelName是redisson_lock__channel:{$KEY}
-    // 在LockPubSub中注册一个entryName -> RedissonLockEntry的哈希映射，
-    // RedissonLockEntry实例中存放着RPromise<RedissonLockEntry>结果，一个信号量形式的锁和订阅方法重入计数器
+    //在LockPubSub中注册一个entryName -> RedissonLockEntry的哈希映射，
+    //RedissonLockEntry实例中存放着RPromise<RedissonLockEntry>结果，一个信号量形式的锁和订阅方法重入计数器
     public CompletableFuture<E> subscribe(String entryName, String channelName) {
         //pubsubService中有一个简单的无冲突解决的AsyncSemaphore数据结构，这里只是简单从中获取一个
         AsyncSemaphore semaphore = service.getSemaphore(new ChannelName(channelName));
         CompletableFuture<E> newPromise = new CompletableFuture<>();
-        //获取一个许可，在提供一个许可前一直将线程阻塞，除非线程被中断。
+        //获取一个channelName的许可，在提供一个许可前一直将线程阻塞，除非线程被中断。
         semaphore.acquire(() -> {
             //isDone方法检查计算是否完成
             if (newPromise.isDone()) {
-                //释放许可，然后返回
+                //释放许可
                 semaphore.release();
                 return;
             }
@@ -97,27 +97,35 @@ abstract class PublishSubscribe<E extends PubSubEntry<E>> {
                 });
                 return;
             }
-            //创建一个E,在lock中是RedissonLockEntry
+            //创建一个新值E,在lock中是RedissonLockEntry
             E value = createEntry(newPromise);
-            //获得1个许可
+            //获得1个RedissonLockEntry许可
             value.acquire();
             //判断entryName是否存在，不存在则插入，返回null；存在返回旧值
             E oldValue = entries.putIfAbsent(entryName, value);
+            //旧值存在的情况下
             if (oldValue != null) {
+                //旧值获得一个许可
                 oldValue.acquire();
+                //释放channelName的许可
                 semaphore.release();
+                //旧值，任务执行完成后执行的回调方法
                 oldValue.getPromise().whenComplete((r, e) -> {
                     if (e != null) {
+                        //完成后抛出异常
                         newPromise.completeExceptionally(e);
                         return;
                     }
+                    //没异常就结束
                     newPromise.complete(r);
                 });
                 return;
             }
-
+            //不存在旧值的情况下，创建redis队列进行监听.实际上是value 中的ConcurrentLinkedQueue<Runnable> listeners，把Runnable.run起来
             RedisPubSubListener<Object> listener = createListener(channelName, value);
+            //此订阅方法中有ConcurrentLinkedQueue<Runnable> listeners的add
             CompletableFuture<PubSubConnectionEntry> s = service.subscribeNoTimeout(LongCodec.INSTANCE, channelName, semaphore, listener);
+            //不论是正常完成还是出现异常它都会调用whenComplete这个回调函数
             newPromise.whenComplete((r, e) -> {
                 if (e != null) {
                     s.completeExceptionally(e);

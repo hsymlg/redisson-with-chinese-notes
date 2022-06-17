@@ -41,7 +41,7 @@ public class LockPubSub extends PublishSubscribe<RedissonLockEntry> {
     @Override
     protected void onMessage(RedissonLockEntry value, Long message) {
         if (message.equals(UNLOCK_MESSAGE)) {
-            // 从监听器队列取监听线程执行监听回调
+            // 从监听器队列取监听线程执行监听回调；获取并移除此队列的头，如果此队列为空，则返回 null。
             Runnable runnableToExecute = value.getListeners().poll();
             if (runnableToExecute != null) {
                 runnableToExecute.run();
