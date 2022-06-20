@@ -47,7 +47,7 @@ public class LockPubSub extends PublishSubscribe<RedissonLockEntry> {
                 runnableToExecute.run();
             }
             // getLatch()返回的是Semaphore，信号量，此处是释放信号量
-            // 释放信号量后会唤醒等待的entry.getLatch().tryAcquire去再次尝试申请锁
+            // 释放信号量后会唤醒等待的entry.getLatch().tryAcquire(lock或者trylock方法里面)去再次尝试申请锁
             value.getLatch().release();
         } else if (message.equals(READ_UNLOCK_MESSAGE)) {
             while (true) {
