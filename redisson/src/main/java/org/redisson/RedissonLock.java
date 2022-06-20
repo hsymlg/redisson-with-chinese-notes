@@ -110,9 +110,9 @@ public class RedissonLock extends RedissonBaseLock {
         // 订阅redisson_lock__channel:{$KEY}，其实本质的目的是为了客户端通过Redis的订阅发布，感知到解锁的事件
         // 这个方法会在LockPubSub中注册一个entryName -> RedissonLockEntry的哈希映射，
         // RedissonLockEntry实例中存放着RPromise<RedissonLockEntry>结果，一个信号量形式的锁和订阅方法重入计数器
-        // 下面的死循环中的getEntry()或者RPromise<RedissonLockEntry>#getNow()就是从这个映射中获取的
         CompletableFuture<RedissonLockEntry> future = subscribe(threadId);
-        //实际上内部是netty的HashedWheelTimer-newTimeout，触发的延迟任务，时间是config.getTimeout() + config.getRetryInterval() * config.getRetryAttempts();
+        //实际上内部是netty的时间轮算法HashedWheelTimer-newTimeout，触发的延迟任务，目的是确保redis命令执行完成后再执行后续操作
+        //时间是config.getTimeout() + config.getRetryInterval() * config.getRetryAttempts();注意这个时间是redis的baseconfig中的时间
         pubSub.timeout(future);
         RedissonLockEntry entry;
         // 同步订阅执行，获取注册订阅Channel的响应，区分是否支持中断
@@ -194,12 +194,12 @@ public class RedissonLock extends RedissonBaseLock {
 
     private <T> RFuture<Long> tryAcquireAsync(long waitTime, long leaseTime, TimeUnit unit, long threadId) {
         RFuture<Long> ttlRemainingFuture;
-        // leaseTime>0 说明没过期
+        // leaseTime>0 说明没有设置时间
         if (leaseTime > 0) {
             // 实质是异步执行加锁Lua脚本
             ttlRemainingFuture = tryLockInnerAsync(waitTime, leaseTime, unit, threadId, RedisCommands.EVAL_LONG);
         } else {
-            // 否则，已经过期了,传参变为新的时间（续期后）internalLockLeaseTime是读取的配置文件里的时间
+            // 否则，没有设置时间,传参变为新的时间（续期后）internalLockLeaseTime是读取的配置文件里的时间
             ttlRemainingFuture = tryLockInnerAsync(waitTime, internalLockLeaseTime,
                     TimeUnit.MILLISECONDS, threadId, RedisCommands.EVAL_LONG);
         }
@@ -210,7 +210,7 @@ public class RedissonLock extends RedissonBaseLock {
                     //有剩余时间的话，内部锁剩余时间就是leaseTime
                     internalLockLeaseTime = unit.toMillis(leaseTime);
                 } else {
-                    //看门狗续期
+                    //没有设置时间的话，看门狗续期
                     scheduleExpirationRenewal(threadId);
                 }
             }
