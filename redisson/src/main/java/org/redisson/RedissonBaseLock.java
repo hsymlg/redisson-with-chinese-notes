@@ -172,16 +172,17 @@ public abstract class RedissonBaseLock extends RedissonExpirable implements RLoc
         ee.setTimeout(task);
     }
 
-    // 基于线程ID定时调度和续期
+    // 基于线程ID定时调度和续期，对于同一客户端重复获锁且成功时，Redisson是怎么保证WatchDog的延期操作只执行一次？答案是：本地缓存EXPIRATION_RENEWAL_MAP
     protected void scheduleExpirationRenewal(long threadId) {
         // 新建一个ExpirationEntry记录线程重入计数
         ExpirationEntry entry = new ExpirationEntry();
+        //entryName是uuid+{$KEY}
         ExpirationEntry oldEntry = EXPIRATION_RENEWAL_MAP.putIfAbsent(getEntryName(), entry);
         if (oldEntry != null) {
-            // 当前进行的当前线程重入加锁
+            //当前线程重入加锁
             oldEntry.addThreadId(threadId);
         } else {
-            // 当前进行的当前线程首次加锁
+            //第1次获取成功时
             entry.addThreadId(threadId);
             try {
                 // 首次新建ExpirationEntry需要触发续期方法，记录续期的任务句柄

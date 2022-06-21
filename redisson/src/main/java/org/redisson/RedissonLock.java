@@ -207,10 +207,10 @@ public class RedissonLock extends RedissonBaseLock {
             // lock acquired,如果ttlRemainingFuture是null的话，就是获得锁了
             if (ttlRemaining == null) {
                 if (leaseTime > 0) {
-                    //有剩余时间的话，内部锁剩余时间就是leaseTime
+                    //设置了失效时间，内部锁剩余时间就是leaseTime
                     internalLockLeaseTime = unit.toMillis(leaseTime);
                 } else {
-                    //没有设置时间的话，看门狗续期
+                    //没有设置过期时间的话，看门狗续期
                     scheduleExpirationRenewal(threadId);
                 }
             }
