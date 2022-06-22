@@ -178,6 +178,8 @@ public class RedissonReadLock extends RedissonLock implements RLock {
                 "redis.call('del', KEYS[1]); " +
                 "redis.call('publish', KEYS[2], ARGV[1]); " +
                 "return 1; ",
+                //KEYS：[“myLock”,“redisson_rwlock:{myLock}”,"{myLock}:UUID-1:threadId-1:rwlock_timeout","{myLock}"]
+                //ARGVS：[0L,“UUID:threadId”]
                 Arrays.<Object>asList(getRawName(), getChannelName(), timeoutPrefix, keyPrefix),
                 LockPubSub.UNLOCK_MESSAGE, getLockName(threadId));
     }
