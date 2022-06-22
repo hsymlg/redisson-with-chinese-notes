@@ -185,23 +185,34 @@ public class RedissonReadLock extends RedissonLock implements RLock {
     protected String getKeyPrefix(long threadId, String timeoutPrefix) {
         return timeoutPrefix.split(":" + getLockName(threadId))[0];
     }
-    
+
+    //重写了RedissonBaseLock的方法
     @Override
     protected CompletionStage<Boolean> renewExpirationAsync(long threadId) {
         String timeoutPrefix = getReadWriteTimeoutNamePrefix(threadId);
         String keyPrefix = getKeyPrefix(threadId, timeoutPrefix);
         
         return evalWriteAsync(getRawName(), LongCodec.INSTANCE, RedisCommands.EVAL_BOOLEAN,
+                //第一步，获取当前线程的加锁次数
                 "local counter = redis.call('hget', KEYS[1], ARGV[2]); " +
+                        //分支一：当前线程获取锁次数大于0，刷新锁过期时间；如果锁集合元素大于1，刷新里面加锁线程的过期时间
                 "if (counter ~= false) then " +
+                        //利用 pexpire 命令重新刷新锁过期时间
                     "redis.call('pexpire', KEYS[1], ARGV[1]); " +
-                    
+                    //利用 hlen 命令获取锁集合里面的元素个数，然后判断是否大于1个以上key
+                    //做这个判断是因为，如果是可重入锁或者公平锁，锁集合里面只有有一个key，就是当前成功获取锁的线程。
+                    //但如果是读写锁，他里面可包含2个以上key，其中一个就是锁的模式，即 mode 字段，可表示当前锁是读锁还是写锁。
                     "if (redis.call('hlen', KEYS[1]) > 1) then " +
+                        //利用 hkeys 命令获取锁集合里面所有key
                         "local keys = redis.call('hkeys', KEYS[1]); " + 
-                        "for n, key in ipairs(keys) do " + 
-                            "counter = tonumber(redis.call('hget', KEYS[1], key)); " + 
-                            "if type(counter) == 'number' then " + 
-                                "for i=counter, 1, -1 do " + 
+                        "for n, key in ipairs(keys) do " +
+                        //遍历所有key，并利用 hget 命令来获取key对应的value
+                            "counter = tonumber(redis.call('hget', KEYS[1], key)); " +
+                            //如果key的值为数字，证明此key是加锁成功的线程，并且value的值表示线程加锁次数；
+                            //需要遍历加锁次数利用 pexpire 为这个线程对应的加锁记录刷新过期时间
+                            "if type(counter) == 'number' then " +
+                                "for i=counter, 1, -1 do " +
+                                    //其实就是为了给所有加锁记录刷新过期时间
                                     "redis.call('pexpire', KEYS[2] .. ':' .. key .. ':rwlock_timeout:' .. i, ARGV[1]); " + 
                                 "end; " + 
                             "end; " + 
@@ -211,6 +222,8 @@ public class RedissonReadLock extends RedissonLock implements RLock {
                     "return 1; " +
                 "end; " +
                 "return 0;",
+            //KEYS：[“myLock”,"{myLock}"]
+            //ARGVS：[30_000毫秒,“UUID-1:threadId-1”]
             Arrays.<Object>asList(getRawName(), keyPrefix),
             internalLockLeaseTime, getLockName(threadId));
     }
