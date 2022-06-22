@@ -53,30 +53,80 @@ public class RedissonReadLock extends RedissonLock implements RLock {
     String getReadWriteTimeoutNamePrefix(long threadId) {
         return suffixName(getRawName(), getLockName(threadId)) + ":rwlock_timeout";
     }
-    
+
+    //KEYS
     @Override
     <T> RFuture<T> tryLockInnerAsync(long waitTime, long leaseTime, TimeUnit unit, long threadId, RedisStrictCommand<T> command) {
         return evalWriteAsync(getRawName(), LongCodec.INSTANCE, command,
+                                //利用 hget 命令获取当前锁模式(hget myLock mode)
                                 "local mode = redis.call('hget', KEYS[1], 'mode'); " +
+                                        //当前线程尝试获取读锁时，还没有其他线程成功获取锁，不管是读锁还是写锁
                                 "if (mode == false) then " +
+                                        //利用 hset 命令设置锁模式为读锁(hset myLock mode read),执行后，锁内容如下：myLock:{"mode":"read"}
                                   "redis.call('hset', KEYS[1], 'mode', 'read'); " +
+                                        /*
+                                         * 利用 hset 命令为当前线程添加加锁次数记录，hset myLock UUID-1:threadId-1 1，
+                                         * 执行后锁的内容如下
+                                         * myLock:{
+                                         *     "mode":"read",
+                                         *     "UUID-1:threadId-1":1}
+                                         */
                                   "redis.call('hset', KEYS[1], ARGV[2], 1); " +
+                                        //利用 set 命令为当前线程添加一条加锁超时记录（set {myLock}:UUID-1:threadId-1:rwlock_timeout:1 1）
+                                        //执行后锁的内容如下
+                                        //myLock:{
+                                        //    "mode":"read",
+                                        //    "UUID-1:threadId-1":1
+                                        //}
+                                        //{myLock}:UUID-1:threadId-1:rwlock_timeout:1 1
                                   "redis.call('set', KEYS[2] .. ':1', 1); " +
+                                        //利用 pexpire 命令为锁&当前线程超时记录添加过期时间
+                                        //pexpire {myLock}:UUID-1:threadId-1:rwlock_timeout:1 30000
+                                        //pexpire myLock 30000
                                   "redis.call('pexpire', KEYS[2] .. ':1', ARGV[1]); " +
                                   "redis.call('pexpire', KEYS[1], ARGV[1]); " +
                                   "return nil; " +
                                 "end; " +
+                                        //锁模式为读锁或锁模式为写锁并且获取写锁为当前线程，当前线程可再次获取读锁
+                                        //锁模式为读锁，当前线程可获取读锁。即：redisson提供的读写锁支持不同线程重复获取锁
+                                        //锁模式为写锁，并且获取写锁的线程为当前线程，当前线程可获取读锁。即：redisson 提供的读写锁，读写并不是完全互斥，而是支持同一线程先获取写锁再获取读锁。
                                 "if (mode == 'read') or (mode == 'write' and redis.call('hexists', KEYS[1], ARGV[3]) == 1) then " +
-                                  "local ind = redis.call('hincrby', KEYS[1], ARGV[2], 1); " + 
+                                        //利用 hincrby 命令为当前线程增加加锁次数
+                                        //假设当前线程之前获取过1次锁（假设是读锁），执行后锁内容如下：
+                                        //myLock:{
+                                        //    "mode":"read",
+                                        //    "UUID-1:threadId-1":2
+                                        //}
+                                  "local ind = redis.call('hincrby', KEYS[1], ARGV[2], 1); " +
+                                        //为当前线程拼接加锁记录 key，然后利用 set 命令添加一条加锁超时记录
+                                        //key = {myLock}:UUID-1:threadId-1:rwlock_timeout:2
+                                        //set {myLock}:UUID-1:threadId-1:rwlock_timeout:2 1
+                                        //执行后的内容，注意下面这种情况是同一个线程重入读锁的
+                                        //myLock:{
+                                        //    "mode":"read",
+                                        //    "UUID-1:threadId-1":2
+                                        //}
+                                        //{myLock}:UUID-1:threadId-1:rwlock_timeout:1 1
+                                        //{myLock}:UUID-1:threadId-1:rwlock_timeout:2 1
                                   "local key = KEYS[2] .. ':' .. ind;" +
                                   "redis.call('set', key, 1); " +
+                                        //给新的加锁超时记录设置过期时间
                                   "redis.call('pexpire', key, ARGV[1]); " +
+                                        //最后，pttl 命令获取锁的过期时间，利用 pexipre 给锁重新设置锁的过期时间
                                   "local remainTime = redis.call('pttl', KEYS[1]); " +
                                   "redis.call('pexpire', KEYS[1], math.max(remainTime, ARGV[1])); " +
                                   "return nil; " +
                                 "end;" +
+                                        //不满足上面的两个分支，当前线程就无法成功获取读锁
                                 "return redis.call('pttl', KEYS[1]);",
-                        Arrays.<Object>asList(getRawName(), getReadWriteTimeoutNamePrefix(threadId)),
+                /*
+                 * getRawName()：锁key
+                 * getLockName(threadId)：id:threadId -> 客户端UUID:线程ID -> 假设 UUID-1:threadId-1
+                 * suffixName()：{锁key}:UUID:threadId
+                 * KEYS：[“myLock”,"{myLock}:UUID-1:threadId-1:rwlock_timeout"]
+                 * ARGVS：[30_000毫秒,“UUID-1:threadId-1”,“UUID-1:threadId-1:write”]
+                 */
+                Arrays.<Object>asList(getRawName(), getReadWriteTimeoutNamePrefix(threadId)),
                         unit.toMillis(leaseTime), getLockName(threadId), getWriteLockName(threadId));
     }
 
