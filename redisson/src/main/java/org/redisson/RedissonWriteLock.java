@@ -55,22 +55,37 @@ public class RedissonWriteLock extends RedissonLock implements RLock {
     @Override
     <T> RFuture<T> tryLockInnerAsync(long waitTime, long leaseTime, TimeUnit unit, long threadId, RedisStrictCommand<T> command) {
         return evalWriteAsync(getRawName(), LongCodec.INSTANCE, command,
+                            //分支一：锁的模式为空，即当前锁尚未被其他线程持有
+                            //当前线程尝试获取写锁时，还没有其他线程成功持有锁，包括读锁和写锁
                             "local mode = redis.call('hget', KEYS[1], 'mode'); " +
                             "if (mode == false) then " +
+                                    //利用 hset 命令设置锁模式为写锁
                                   "redis.call('hset', KEYS[1], 'mode', 'write'); " +
+                                    //利用 hset 命令为当前线程添加加锁次数记录
+                                    //我们可以发现，读写锁中的写锁获取锁不再需要写锁中的加锁超时记录，因为写锁仅支持一个线程来持有锁，锁的超时时间就是线程持有锁的超时时间。
                                   "redis.call('hset', KEYS[1], ARGV[2], 1); " +
+                                    //利用 pexpire 命令为锁添加过期时间
                                   "redis.call('pexpire', KEYS[1], ARGV[1]); " +
                                   "return nil; " +
                               "end; " +
+                                    //分支二：锁模式为写锁并且持有写锁为当前线程，当前线程可再次获取写锁
+                                    //当前线程重复获取写锁，即读写锁中的写锁支持可重入获取锁
                               "if (mode == 'write') then " +
+                                    //锁模式为写锁，利用 hexists 命令判断持有写锁为当前线程
                                   "if (redis.call('hexists', KEYS[1], ARGV[2]) == 1) then " +
-                                      "redis.call('hincrby', KEYS[1], ARGV[2], 1); " + 
+                                    //利用 hincrby 命令为当前线程增加1次加锁次数
+                                      "redis.call('hincrby', KEYS[1], ARGV[2], 1); " +
+                                        //利用 pttl 获取当前写锁的超时剩余毫秒数
                                       "local currentExpire = redis.call('pttl', KEYS[1]); " +
+                                        //利用 pexipre 给锁重新设置锁的过期时间，过期时间为：上次加锁的剩余毫秒数+30000毫秒
                                       "redis.call('pexpire', KEYS[1], currentExpire + ARGV[1]); " +
                                       "return nil; " +
                                   "end; " +
                                 "end;" +
+                                    //最后：获取锁失败，返回锁pttl
                                 "return redis.call('pttl', KEYS[1]);",
+                        //KEYS：[“myLock”]
+                        //ARGVS：[30_000毫秒,“UUID:threadId:write”]
                         Arrays.<Object>asList(getRawName()),
                         unit.toMillis(leaseTime), getLockName(threadId));
     }
