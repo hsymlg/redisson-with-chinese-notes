@@ -117,7 +117,7 @@ public class RedissonFairLock extends RedissonLock implements RLock {
                     //获取锁失败，然后进入等待队列，但是之后客户端所在服务器宕机了。
                     //开启死循环
                     "while true do " +
-                            //利用 lindex 命令判断等待队列中第一个元素是否存在，如果存在，直接跳出循环
+                            //利用 lindex 命令判断等待队列中第一个元素是否存在，如果不存在，直接跳出循环
                         "local firstThreadId2 = redis.call('lindex', KEYS[2], 0);" +
                         "if firstThreadId2 == false then " +
                             "break;" +
@@ -128,7 +128,7 @@ public class RedissonFairLock extends RedissonLock implements RLock {
                         "if timeout <= tonumber(ARGV[3]) then " +
                             // remove the item from the queue and timeout set
                             // NOTE we do not alter any other timeout
-                            //如果超时时间已经小于当前时间，那么首先从超时集合中移除该节点，接着也在等待队列中弹出第一个节点
+                            //如果超时时间已经小于当前时间，那么首先从超时集合中移除该节点(zrem)，接着也在等待队列中弹出第一个节点(lpop)
                             "redis.call('zrem', KEYS[3], firstThreadId2);" +
                             "redis.call('lpop', KEYS[2]);" +
                         "else " +
