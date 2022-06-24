@@ -265,8 +265,6 @@ public class RedissonFairLock extends RedissonLock implements RLock {
                 // remove stale threads
                 //分支一：清理过期的等待线程
                 //和获取锁的第一步一样，开个死循环清理过期的等待线程，主要避免下面场景，避免无效客户端占用等待队列资源
-                //获取锁失败，然后进入等待队列，但是网络出现问题，那么后续很有可能就不能继续正常获取锁了。
-                //获取锁失败，然后进入等待队列，但是之后客户端所在服务器宕机了。
                 //开启死循环
                 "while true do "
                         //利用 lindex 命令判断等待队列中第一个元素是否存在，如果存在，直接跳出循环
