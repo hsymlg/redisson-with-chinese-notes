@@ -234,20 +234,27 @@ public class RedissonMultiLock implements RLock {
 
     @Override
     public void lockInterruptibly(long leaseTime, TimeUnit unit) throws InterruptedException {
+        // 连锁的锁数量 * 1500，假设我们这里是3个锁，那么就是3*1500 = 4500 毫秒
         long baseWaitTime = locks.size() * 1500;
+        // 死循环，尝试获取锁，直到成功
         while (true) {
             long waitTime;
             if (leaseTime <= 0) {
+                // 没有设置剩余时间，waitTime 被赋值为 baseWaitTime
                 waitTime = baseWaitTime;
             } else {
+                //有剩余时间，waitTime 初始值等于 leaseTime
                 waitTime = unit.toMillis(leaseTime);
                 if (waitTime <= baseWaitTime) {
+                    //如果 waitTIme 小于等于 baseWaitTime，重新赋值为 [waitTime/2,waitTime] 之间的随机数
                     waitTime = ThreadLocalRandom.current().nextLong(waitTime/2, waitTime);
                 } else {
+                    //如果 waitTime 大于 baseWaitTIme，重新赋值为 [baseWaitTIme,waitTime] 之间的随机数
                     waitTime = ThreadLocalRandom.current().nextLong(baseWaitTime, waitTime);
                 }
             }
-
+            // 最后，waitTime 是 [2250,4500] 之间的随机数
+            // leaseTime 还是 -1
             if (tryLock(waitTime, leaseTime, TimeUnit.MILLISECONDS)) {
                 return;
             }
@@ -313,12 +320,15 @@ public class RedissonMultiLock implements RLock {
         
         long time = System.currentTimeMillis();
         long remainTime = -1;
+        //waiteTime 不是-1，remainTime 赋值为 waitTime
         if (waitTime > 0) {
             remainTime = unit.toMillis(waitTime);
         }
+        // 这里计算锁等待时间，RedissonMultiLock 是直接返回传入的 remainTime
         long lockWaitTime = calcLockWaitTime(remainTime);
-        
+        // 允许获取锁失败次数，RedissonMultiLock 限制为0，即任何锁都不能获取失败
         int failedLocksLimit = failedLocksLimit();
+        // 记录获取成功的锁
         List<RLock> acquiredLocks = new ArrayList<>(locks.size());
         for (ListIterator<RLock> iterator = locks.listIterator(); iterator.hasNext();) {
             RLock lock = iterator.next();
@@ -327,53 +337,74 @@ public class RedissonMultiLock implements RLock {
                 if (waitTime <= 0 && leaseTime <= 0) {
                     lockAcquired = lock.tryLock();
                 } else {
+                    // 获取等待时间，因为 RedissonMultiLock 的处理是 lockWaitTime = remainTime，
+                    // 所以 awaitTime 就等于 remainTime，也就是调用方法时传入的 waitTime
                     long awaitTime = Math.min(lockWaitTime, remainTime);
+                    // 调用 RedissonLock 的 tryLock(long waitTime, long leaseTime, TimeUnit unit) 方法
+                    // 其实就是尝试获取锁，如果获取失败，最长等待时间为 awaitTime，如果获取成功了，持有锁时间最长为 newLeaseTime，
+                    // 这里 newLeaseTime 虽然 -1，但并不是锁没有设置过期时间，大家要记得 RedissonLock 的 watchdog 机制哦！
                     lockAcquired = lock.tryLock(awaitTime, newLeaseTime, TimeUnit.MILLISECONDS);
                 }
             } catch (RedisResponseTimeoutException e) {
+                // 如果redis返回响应超时，释放当前锁，为了兼容成功获取锁，但是redis响应超时的情况。
                 unlockInner(Arrays.asList(lock));
+                // 加锁结果置为false
                 lockAcquired = false;
             } catch (Exception e) {
+                // 捕获异常，加锁结果置为false
                 lockAcquired = false;
             }
-            
+            // 如果获取锁成功，将当前锁加入成功列表中
             if (lockAcquired) {
                 acquiredLocks.add(lock);
             } else {
+                // 假设 锁数量-成功锁数量等于失败上限，则跳出循环。在 RedissonMultiLock 中不会出现这种情况，主要是为了 RedissonRedLock 服务的，
+                // 因为 RedLock 算法中只要一半以上的锁获取成功，就算成功持有锁。
                 if (locks.size() - acquiredLocks.size() == failedLocksLimit()) {
                     break;
                 }
-
+                // 如果失败上限为0，证明已经没有机会再失败了，执行下面的操作
                 if (failedLocksLimit == 0) {
+                    // 释放成功获取的锁记录
                     unlockInner(acquiredLocks);
+                    // 如果等待时间为-1，直接返回false表示获取连锁失败
                     if (waitTime <= 0) {
                         return false;
                     }
+                    // 重置失败上限
                     failedLocksLimit = failedLocksLimit();
+                    // 清理成功成功记录
                     acquiredLocks.clear();
                     // reset iterator
+                    // 重置锁列表，后续所有锁都需要重新获取
                     while (iterator.hasPrevious()) {
                         iterator.previous();
                     }
                 } else {
+                    // 如果失败上限不为0，递减1
                     failedLocksLimit--;
                 }
             }
-            
+            // 如果remainTime不等于-1，即传入的waitTime不为-1
             if (remainTime > 0) {
+                // remainTime 减去当前时间减去尝试获取锁时的当前时间
                 remainTime -= System.currentTimeMillis() - time;
+                // 重置time
                 time = System.currentTimeMillis();
+                // 如果remainTime小于等于0，即等待时间已经消耗完了，释放所有成功获取的锁记录，返回false表示尝试获取锁失败
                 if (remainTime <= 0) {
                     unlockInner(acquiredLocks);
                     return false;
                 }
             }
         }
-
+        // 到这里，表示已经成功获取指定数量的锁，判断 leaseTime 是否不为-1，如果不是，即锁需要设定持有时间
         if (leaseTime > 0) {
+            // 遍历所有成功获取的锁记录，异步调用 pexpire 为锁key 设置超时时间
             acquiredLocks.stream()
                     .map(l -> (RedissonBaseLock) l)
                     .map(l -> l.expireAsync(unit.toMillis(leaseTime), TimeUnit.MILLISECONDS))
+                    // 遍历获取异步调用结果
                     .forEach(f -> f.toCompletableFuture().join());
         }
         
@@ -405,11 +436,11 @@ public class RedissonMultiLock implements RLock {
     @Override
     public void unlock() {
         List<RFuture<Void>> futures = new ArrayList<>(locks.size());
-
+        // 遍历锁列表，调用RedissonLock异步释放锁的方法
         for (RLock lock : locks) {
             futures.add(lock.unlockAsync());
         }
-
+        // 遍历异步调用返回的 future，同步等待获取结果
         for (RFuture<Void> future : futures) {
             future.toCompletableFuture().join();
         }
