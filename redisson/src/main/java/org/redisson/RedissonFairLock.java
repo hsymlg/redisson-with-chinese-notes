@@ -325,15 +325,24 @@ public class RedissonFairLock extends RedissonLock implements RLock {
                 "if (redis.call('hexists', KEYS[1], ARGV[3]) == 0) then " +
                     "return nil;" +
                 "end; " +
+                        //分支四：当前线程拥有锁，并且获取锁次数大于1
+                        //利用 hincrby 扣减当前线程的加锁次数
                 "local counter = redis.call('hincrby', KEYS[1], ARGV[3], -1); " +
                 "if (counter > 0) then " +
+                        //如果扣减后次数还是大于0，证明是重复获取锁，所以此时只需要重新刷新锁的过期时间，然后返回0
                     "redis.call('pexpire', KEYS[1], ARGV[2]); " +
                     "return 0; " +
                 "end; " +
-                    
+                    //分支五：当前线程成功释放锁
+                        //如果前面的四个分支都不符合，证明当前线程持有锁，并且只加锁一次
+                        //这里只需要删除锁key，然后通知等待队列中的第一个线程即可
+                        //利用 del 命令删除锁对应 redis key
                 "redis.call('del', KEYS[1]); " +
+                        //往等待线程的订阅channel发送消息，通知其可以尝试获取锁了
+                        //利用 lindex 获取等待队列中的第一个线程
                 "local nextThreadId = redis.call('lindex', KEYS[2], 0); " + 
                 "if nextThreadId ~= false then " +
+                        //利用订阅channel给等待线程发送通知
                     "redis.call('publish', KEYS[4] .. ':' .. nextThreadId, ARGV[1]); " +
                 "end; " +
                 "return 1; ",
