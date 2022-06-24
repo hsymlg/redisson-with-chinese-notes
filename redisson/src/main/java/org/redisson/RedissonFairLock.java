@@ -155,8 +155,6 @@ public class RedissonFairLock extends RedissonLock implements RLock {
             return evalWriteAsync(getRawName(), LongCodec.INSTANCE, command,
                     //分支一：清理过期的等待线程
                     //这个死循环的作用主要用于清理过期的等待线程，主要避免下面场景，避免无效客户端占用等待队列资源
-                    //获取锁失败，然后进入等待队列，但是网络出现问题，那么后续很有可能就不能继续正常获取锁了。
-                    //获取锁失败，然后进入等待队列，但是之后客户端所在服务器宕机了。
                     //开启死循环
                     "while true do " +
                         //利用 lindex 命令判断等待队列中第一个元素是否存在，如果不存在，直接跳出循环
@@ -168,7 +166,7 @@ public class RedissonFairLock extends RedissonLock implements RLock {
                             //利用 zscore 在 超时记录集合(sorted set) 中获取对应的超时时间
                         "local timeout = tonumber(redis.call('zscore', KEYS[3], firstThreadId2));" +
                         "if timeout <= tonumber(ARGV[4]) then " +
-                            //如果超时时间已经小于当前时间，那么首先从超时集合中移除该节点(zrem)，接着也在等待队列中弹出第一个节点(lpop)
+                            //如果超时时间已经小于当前时间(说明超时了)，那么首先从超时集合中移除该节点(zrem)，接着也在等待队列中弹出第一个节点(lpop)
                             "redis.call('zrem', KEYS[3], firstThreadId2);" +
                             "redis.call('lpop', KEYS[2]);" +
                         "else " +
@@ -244,11 +242,14 @@ public class RedissonFairLock extends RedissonLock implements RLock {
                             //计算timeout，并将当前线程放入超时集合和等待队列中，
                             //timeout = ttl + 300000 + 当前时间戳，在最后一个线程的超时时间上加上 300000 以及当前时间戳，就是当前线程的超时时间戳。
                     "local timeout = ttl + tonumber(ARGV[3]) + tonumber(ARGV[4]);" +
+                            //放入超时集合
                     "if redis.call('zadd', KEYS[3], timeout, ARGV[2]) == 1 then " +
+                            //如果成功放入超市集合，同时放入等待队列
                         "redis.call('rpush', KEYS[2], ARGV[2]);" +
                     "end;" +
                             //最后返回ttl
                     "return ttl;",
+                    //KEYS：锁名字，加锁等待队列，等待队列中线程锁时间的 set 集合
                     //KEYS：[“myLock”,“redisson_lock_queue:{myLock}”,“redisson_lock_timeout:{myLock}”]
                     //ARGVS：[30_000毫秒,“UUID:threadId”,30_0000毫秒,当前时间戳]
                     Arrays.asList(getRawName(), threadsQueueName, timeoutSetName),
