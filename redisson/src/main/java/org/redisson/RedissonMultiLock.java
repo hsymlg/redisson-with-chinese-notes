@@ -168,6 +168,7 @@ public class RedissonMultiLock implements RLock {
         if (locks.length == 0) {
             throw new IllegalArgumentException("Lock objects are not defined");
         }
+        //初始化的时候其实是把所有的重入锁放在一个arraylist中
         this.locks.addAll(Arrays.asList(locks));
     }
     
@@ -335,14 +336,13 @@ public class RedissonMultiLock implements RLock {
             boolean lockAcquired;
             try {
                 if (waitTime <= 0 && leaseTime <= 0) {
+                    //两个时间都没有指定的话，就走遍历走重入锁的无参trylock()
                     lockAcquired = lock.tryLock();
                 } else {
                     // 获取等待时间，因为 RedissonMultiLock 的处理是 lockWaitTime = remainTime，
                     // 所以 awaitTime 就等于 remainTime，也就是调用方法时传入的 waitTime
                     long awaitTime = Math.min(lockWaitTime, remainTime);
                     // 调用 RedissonLock 的 tryLock(long waitTime, long leaseTime, TimeUnit unit) 方法
-                    // 其实就是尝试获取锁，如果获取失败，最长等待时间为 awaitTime，如果获取成功了，持有锁时间最长为 newLeaseTime，
-                    // 这里 newLeaseTime 虽然 -1，但并不是锁没有设置过期时间，大家要记得 RedissonLock 的 watchdog 机制哦！
                     lockAcquired = lock.tryLock(awaitTime, newLeaseTime, TimeUnit.MILLISECONDS);
                 }
             } catch (RedisResponseTimeoutException e) {
