@@ -134,6 +134,7 @@ public class MasterSlaveConnectionManager implements ConnectionManager {
     private final Map<RedisURI, RedisConnection> nodeConnections = new ConcurrentHashMap<>();
     
     public MasterSlaveConnectionManager(MasterSlaveServersConfig cfg, Config config, UUID id) {
+        //调用构造方法
         this(config, id);
         this.config = cfg;
 
@@ -141,17 +142,20 @@ public class MasterSlaveConnectionManager implements ConnectionManager {
                 && (cfg.getReadMode() == ReadMode.SLAVE || cfg.getReadMode() == ReadMode.MASTER_SLAVE)) {
             throw new IllegalArgumentException("Slaves aren't defined. readMode can't be SLAVE or MASTER_SLAVE");
         }
-
+        //初始化定时调度器
         initTimer(cfg);
+        //初始化MasterSlaveEntry
         initSingleEntry();
     }
 
     protected MasterSlaveConnectionManager(Config cfg, UUID id) {
         this.id = id.toString();
+        //读取redisson的jar中的文件META-INF/MANIFEST.MF，打印出Bundle-Version对应的Redisson版本信息
         Version.logVersion();
-
+        //EPOLL是linux的多路复用IO模型的增强版本，这里如果启用EPOLL，就让redisson底层netty使用EPOLL的方式，否则配置netty里的NIO非阻塞方式
         if (cfg.getTransportMode() == TransportMode.EPOLL) {
             if (cfg.getEventLoopGroup() == null) {
+                //使用linux IO非阻塞模型EPOLL
                 this.group = new EpollEventLoopGroup(cfg.getNettyThreads(), new DefaultThreadFactory("redisson-netty"));
             } else {
                 this.group = cfg.getEventLoopGroup();
@@ -178,6 +182,7 @@ public class MasterSlaveConnectionManager implements ConnectionManager {
             }
         } else {
             if (cfg.getEventLoopGroup() == null) {
+                //使用linux IO非阻塞模型NIO
                 this.group = new NioEventLoopGroup(cfg.getNettyThreads(), new DefaultThreadFactory("redisson-netty"));
             } else {
                 this.group = cfg.getEventLoopGroup();
@@ -192,6 +197,9 @@ public class MasterSlaveConnectionManager implements ConnectionManager {
         }
         
         if (cfg.getExecutor() == null) {
+            //线程池大小，对于2U 2CPU 8cores/cpu，意思是有2块板子，每个板子上8个物理CPU，那么总计物理CPU个数为16
+            //对于linux有个超线程概念，意思是每个物理CPU可以虚拟出2个逻辑CPU，那么总计逻辑CPU个数为32
+            //这里Runtime.getRuntime().availableProcessors()取的是逻辑CPU的个数，所以这里线程池大小会是64
             int threads = Runtime.getRuntime().availableProcessors() * 2;
             if (cfg.getThreads() != 0) {
                 threads = cfg.getThreads();
@@ -303,9 +311,11 @@ public class MasterSlaveConnectionManager implements ConnectionManager {
     }
     
     protected void initTimer(MasterSlaveServersConfig config) {
+        //读取超时时间配置信息
         int[] timeouts = new int[]{config.getRetryInterval(), config.getTimeout()};
         Arrays.sort(timeouts);
         int minTimeout = timeouts[0];
+        //设置默认超时时间
         if (minTimeout % 100 != 0) {
             minTimeout = (minTimeout % 100) / 2;
         } else if (minTimeout == 100) {
@@ -313,9 +323,9 @@ public class MasterSlaveConnectionManager implements ConnectionManager {
         } else {
             minTimeout = 100;
         }
-        
+        //创建定时调度器
         timer = new HashedWheelTimer(new DefaultThreadFactory("redisson-timer"), minTimeout, TimeUnit.MILLISECONDS, 1024, false);
-        
+        //检测MasterSlaveConnectionManager的空闲连接的监视器IdleConnectionWatcher，会清理不用的空闲的池中连接对象
         connectionWatcher = new IdleConnectionWatcher(this, config);
         subscribeService = new PublishSubscribeService(this, config);
     }
@@ -323,18 +333,21 @@ public class MasterSlaveConnectionManager implements ConnectionManager {
     protected void initSingleEntry() {
         try {
             if (config.checkSkipSlavesInit()) {
+                //ReadMode不为MASTER并且SubscriptionMode不为MASTER才执行
                 masterSlaveEntry = new SingleEntry(this, config);
             } else {
+                //默认主从部署ReadMode=SLAVE,SubscriptionMode=SLAVE,这里会执行
                 masterSlaveEntry = new MasterSlaveEntry(this, config);
             }
             CompletableFuture<RedisClient> masterFuture = masterSlaveEntry.setupMasterEntry(new RedisURI(config.getMasterAddress()));
             masterFuture.join();
 
             if (!config.checkSkipSlavesInit()) {
+                //从节点连接池SlaveConnectionPool和PubSubConnectionPool的默认的最小连接数初始化
                 CompletableFuture<Void> fs = masterSlaveEntry.initSlaveBalancer(getDisconnectedNodes());
                 fs.join();
             }
-
+            //DNS相关
             startDNSMonitoring(masterFuture.getNow(null));
         } catch (Exception e) {
             stopThreads();

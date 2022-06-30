@@ -63,14 +63,16 @@ public class Redisson implements RedissonClient {
 
     protected Redisson(Config config) {
         this.config = config;
+        //产生一份对于传入config的备份
         Config configCopy = new Config(config);
-
+        //根据配置config的类型(主从模式、单机模式、哨兵模式、集群模式、亚马逊云模式、微软云模式)而进行不同的初始化
         connectionManager = ConfigSupport.createConnectionManager(configCopy);
         RedissonObjectBuilder objectBuilder = null;
         if (config.isReferenceEnabled()) {
             objectBuilder = new RedissonObjectBuilder(this);
         }
         commandExecutor = new CommandSyncService(connectionManager, objectBuilder);
+        //连接池对象回收调度器
         evictionScheduler = new EvictionScheduler(commandExecutor);
         writeBehindService = new WriteBehindService(commandExecutor);
     }
@@ -101,7 +103,7 @@ public class Redisson implements RedissonClient {
 
     /**
      * Create sync/async Redisson instance with provided config
-     *
+     * 根据配置Config创建redisson操作类RedissonClient
      * @param config for Redisson
      * @return Redisson instance
      */
