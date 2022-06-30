@@ -78,11 +78,13 @@ public class RedissonSemaphore extends RedissonExpirable implements RSemaphore {
         if (tryAcquire(permits)) {
             return;
         }
-
+        //订阅
         CompletableFuture<RedissonLockEntry> future = subscribe();
+        //延迟队列
         semaphorePubSub.timeout(future);
         RedissonLockEntry entry = commandExecutor.getInterrupted(future);
         try {
+            //如果成功获取凭证，直接返回，没有获取到凭证，则自旋等待。
             while (true) {
                 if (tryAcquire(permits)) {
                     return;
@@ -91,6 +93,7 @@ public class RedissonSemaphore extends RedissonExpirable implements RSemaphore {
                 entry.getLatch().acquire();
             }
         } finally {
+            //取消订阅
             unsubscribe(entry);
         }
 //        get(acquireAsync(permits));
@@ -266,12 +269,17 @@ public class RedissonSemaphore extends RedissonExpirable implements RSemaphore {
         }
 
         return commandExecutor.evalWriteAsync(getRawName(), LongCodec.INSTANCE, RedisCommands.EVAL_BOOLEAN,
+                  //获取key的值
+                  //如果值大于等于 1（要获取的凭证数），对值进行递减
+                  //成功返回 1，失败返回 0
                   "local value = redis.call('get', KEYS[1]); " +
                   "if (value ~= false and tonumber(value) >= tonumber(ARGV[1])) then " +
                       "local val = redis.call('decrby', KEYS[1], ARGV[1]); " +
                       "return 1; " +
                   "end; " +
                   "return 0;",
+                  //KEYS[1]：指定的 key
+                  //ARGV[1]：要获取的凭证数，默认 1
                   Collections.<Object>singletonList(getRawName()), permits);
     }
 
@@ -424,7 +432,8 @@ public class RedissonSemaphore extends RedissonExpirable implements RSemaphore {
     public RFuture<Void> releaseAsync() {
         return releaseAsync(1);
     }
-    
+
+    //释放凭证
     @Override
     public RFuture<Void> releaseAsync(int permits) {
         if (permits < 0) {
@@ -433,7 +442,7 @@ public class RedissonSemaphore extends RedissonExpirable implements RSemaphore {
         if (permits == 0) {
             return new CompletableFutureWrapper<>((Void) null);
         }
-
+        //Redis key 的值进行自增即可，然后订阅
         RFuture<Void> future = commandExecutor.evalWriteAsync(getRawName(), StringCodec.INSTANCE, RedisCommands.EVAL_VOID,
                 "local value = redis.call('incrby', KEYS[1], ARGV[1]); " +
                         "redis.call('publish', KEYS[2], value); ",
@@ -483,11 +492,16 @@ public class RedissonSemaphore extends RedissonExpirable implements RSemaphore {
         RFuture<Boolean> future = commandExecutor.evalWriteAsync(getRawName(), LongCodec.INSTANCE, RedisCommands.EVAL_BOOLEAN,
                 "local value = redis.call('get', KEYS[1]); " +
                         "if (value == false) then "
+                        //直接设置一个key凭证数
                         + "redis.call('set', KEYS[1], ARGV[1]); "
+                        //发布这个key的chnnel
                         + "redis.call('publish', KEYS[2], ARGV[1]); "
                         + "return 1;"
                         + "end;"
                         + "return 0;",
+                //KEYS[1]：指定的 key
+                //KEYS[2]：redisson_sc:{key}
+                //ARGV[1]：凭证数
                 Arrays.asList(getRawName(), getChannelName()), permits);
 
         if (log.isDebugEnabled()) {
