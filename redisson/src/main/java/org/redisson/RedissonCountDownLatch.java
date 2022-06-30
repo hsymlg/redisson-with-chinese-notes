@@ -52,6 +52,7 @@ public class RedissonCountDownLatch extends RedissonObject implements RCountDown
         this.pubSub = commandExecutor.getConnectionManager().getSubscribeService().getCountDownLatchPubSub();
     }
 
+    //await方法，其实就是死循环 不断的从redis获取count的值， 知道count为0，才会继续让主线程往下执行
     @Override
     public void await() throws InterruptedException {
         if (getCount() == 0) {
@@ -251,8 +252,10 @@ public class RedissonCountDownLatch extends RedissonObject implements RCountDown
     @Override
     public RFuture<Void> countDownAsync() {
         return commandExecutor.evalWriteNoRetryAsync(getRawName(), LongCodec.INSTANCE, RedisCommands.EVAL_BOOLEAN,
+                        //就是将对应的key 的值-1
                         "local v = redis.call('decr', KEYS[1]);" +
                         "if v <= 0 then redis.call('del', KEYS[1]) end;" +
+                                //如果为0了，那么发布一跳信息到channel中去
                         "if v == 0 then redis.call('publish', KEYS[2], ARGV[1]) end;",
                     Arrays.<Object>asList(getRawName(), getChannelName()), CountDownLatchPubSub.ZERO_COUNT_MESSAGE);
     }
@@ -283,6 +286,9 @@ public class RedissonCountDownLatch extends RedissonObject implements RCountDown
     @Override
     public RFuture<Boolean> trySetCountAsync(long count) {
         return commandExecutor.evalWriteAsync(getRawName(), LongCodec.INSTANCE, RedisCommands.EVAL_BOOLEAN,
+                //去判定KEY 是否存在
+                //然后设置一下key count
+                //同时发布一个消息
                 "if redis.call('exists', KEYS[1]) == 0 then "
                     + "redis.call('set', KEYS[1], ARGV[2]); "
                     + "redis.call('publish', KEYS[2], ARGV[1]); "
