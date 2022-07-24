@@ -279,7 +279,7 @@ public class RedissonLock extends RedissonBaseLock {
         try {
             //CompletableFuture<V>的get方法,阻塞线程，超时后跑出异常，或者计算完成(订阅成功)返回结果
             subscribeFuture.get(time, TimeUnit.MILLISECONDS);
-        } catch (ExecutionException | TimeoutException e) {
+        } catch (TimeoutException e) {
             if (!subscribeFuture.cancel(false)) {
                 subscribeFuture.whenComplete((res, ex) -> {
                     if (ex == null) {
@@ -288,6 +288,9 @@ public class RedissonLock extends RedissonBaseLock {
                 });
             }
             //内部是completedFuture(null)
+            acquireFailed(waitTime, unit, threadId);
+            return false;
+        } catch (ExecutionException e) {
             acquireFailed(waitTime, unit, threadId);
             return false;
         }

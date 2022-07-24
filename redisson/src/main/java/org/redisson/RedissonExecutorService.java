@@ -29,7 +29,6 @@ import org.redisson.executor.*;
 import org.redisson.executor.params.*;
 import org.redisson.misc.CompletableFutureWrapper;
 import org.redisson.misc.Injector;
-import org.redisson.remote.RequestId;
 import org.redisson.remote.ResponseEntry;
 import org.redisson.remote.ResponseEntry.Result;
 import org.slf4j.Logger;
@@ -40,6 +39,7 @@ import java.lang.invoke.SerializedLambda;
 import java.lang.ref.ReferenceQueue;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZonedDateTime;
 import java.util.*;
@@ -100,9 +100,12 @@ public class RedissonExecutorService implements RScheduledExecutorService {
 
     private final ReferenceQueue<RExecutorFuture<?>> referenceDueue = new ReferenceQueue<>();
     private final Collection<RedissonExecutorFutureReference> references = Collections.newSetFromMap(new ConcurrentHashMap<>());
+
+    private final IdGenerator idGenerator;
     
     public RedissonExecutorService(Codec codec, CommandAsyncExecutor commandExecutor, Redisson redisson,
-                                   String name, QueueTransferService queueTransferService, ConcurrentMap<String, ResponseEntry> responses, ExecutorOptions options) {
+                                   String name, QueueTransferService queueTransferService, ConcurrentMap<String, ResponseEntry> responses,
+                                   ExecutorOptions options) {
         super();
         this.codec = codec;
         this.commandExecutor = commandExecutor;
@@ -170,9 +173,11 @@ public class RedissonExecutorService implements RScheduledExecutorService {
         scheduledRemoteService.setTasksRetryInterval(options.getTaskRetryInterval());
         asyncScheduledService = scheduledRemoteService.get(RemoteExecutorServiceAsync.class, RESULT_OPTIONS);
         asyncScheduledServiceAtFixed = scheduledRemoteService.get(RemoteExecutorServiceAsync.class, RemoteInvocationOptions.defaults().noAck().noResult());
+
+        idGenerator = options.getIdGenerator();
     }
     
-    protected String generateRequestId() {
+    protected String generateActiveWorkersId() {
         byte[] id = new byte[16];
         ThreadLocalRandom.current().nextBytes(id);
         return ByteBufUtil.hexDump(id);
@@ -210,7 +215,7 @@ public class RedissonExecutorService implements RScheduledExecutorService {
 
     @Override
     public int countActiveWorkers() {
-        String id = generateRequestId();
+        String id = generateActiveWorkersId();
         int subscribers = (int) workersTopic.publish(id);
         if (subscribers == 0) {
             return 0;
@@ -560,34 +565,22 @@ public class RedissonExecutorService implements RScheduledExecutorService {
 
     @Override
     public <T> RExecutorFuture<T> submit(Callable<T> task) {
-        RemotePromise<T> promise = (RemotePromise<T>) submitAsync(task).toCompletableFuture();
-        syncExecute(promise);
-        return createFuture(promise);
+        return submit(idGenerator.generateId(), task);
     }
 
     @Override
     public <T> RExecutorFuture<T> submit(Callable<T> task, long timeToLive, TimeUnit timeUnit) {
-        RemotePromise<T> promise = (RemotePromise<T>) submitAsync(task, timeToLive, timeUnit).toCompletableFuture();
-        syncExecute(promise);
-        return createFuture(promise);
+        return submit(idGenerator.generateId(), task, Duration.ofMillis(timeUnit.toMillis(timeToLive)));
     }
 
     @Override
     public <T> RExecutorFuture<T> submitAsync(Callable<T> task, long timeToLive, TimeUnit timeUnit) {
-        check(task);
-        TaskParameters taskParameters = createTaskParameters(task);
-        taskParameters.setTtl(timeUnit.toMillis(timeToLive));
-        RemotePromise<T> result = (RemotePromise<T>) asyncService.executeCallable(taskParameters);
-        addListener(result);
-        return createFuture(result);
+        return submitAsync(idGenerator.generateId(), task, Duration.ofMillis(timeUnit.toMillis(timeToLive)));
     }
 
     @Override
     public <T> RExecutorFuture<T> submitAsync(Callable<T> task) {
-        check(task);
-        RemotePromise<T> result = (RemotePromise<T>) asyncService.executeCallable(createTaskParameters(task)).toCompletableFuture();
-        addListener(result);
-        return createFuture(result);
+        return submitAsync(idGenerator.generateId(), task);
     }
     
     @Override
@@ -618,15 +611,25 @@ public class RedissonExecutorService implements RScheduledExecutorService {
     }
 
     protected TaskParameters createTaskParameters(Callable<?> task) {
+        return createTaskParameters(idGenerator.generateId(), task);
+    }
+
+    protected TaskParameters createTaskParameters(String taskId, Callable<?> task) {
         ClassBody classBody = getClassBody(task);
         byte[] state = encode(task);
-        return new TaskParameters(classBody.getClazzName(), classBody.getClazz(), classBody.getLambda(), state);
+        String id = taskId;
+        return new TaskParameters(id, classBody.getClazzName(), classBody.getClazz(), classBody.getLambda(), state);
     }
     
     protected TaskParameters createTaskParameters(Runnable task) {
+        return createTaskParameters(idGenerator.generateId(), task);
+    }
+
+    protected TaskParameters createTaskParameters(String taskId, Runnable task) {
         ClassBody classBody = getClassBody(task);
         byte[] state = encode(task);
-        return new TaskParameters(classBody.getClazzName(), classBody.getClazz(), classBody.getLambda(), state);
+        String id = taskId;
+        return new TaskParameters(id, classBody.getClazzName(), classBody.getClazz(), classBody.getLambda(), state);
     }
 
     @Override
@@ -783,37 +786,25 @@ public class RedissonExecutorService implements RScheduledExecutorService {
     
     @Override
     public RExecutorFuture<?> submit(Runnable task) {
-        RemotePromise<Void> promise = (RemotePromise<Void>) submitAsync(task).toCompletableFuture();
-        syncExecute(promise);
-        return createFuture(promise);
+        return submit(idGenerator.generateId(), task);
     }
 
     @Override
     public RExecutorFuture<?> submit(Runnable task, long timeToLive, TimeUnit timeUnit) {
-        RemotePromise<Void> promise = (RemotePromise<Void>) submitAsync(task, timeToLive, timeUnit).toCompletableFuture();
-        syncExecute(promise);
-        return createFuture(promise);
+        return submit(idGenerator.generateId(), task, Duration.ofMillis(timeUnit.toMillis(timeToLive)));
     }
 
     @Override
     public RExecutorFuture<?> submitAsync(Runnable task, long timeToLive, TimeUnit timeUnit) {
-        check(task);
-        TaskParameters taskParameters = createTaskParameters(task);
-        taskParameters.setTtl(timeUnit.toMillis(timeToLive));
-        RemotePromise<Void> result = (RemotePromise<Void>) asyncService.executeRunnable(taskParameters).toCompletableFuture();
-        addListener(result);
-        return createFuture(result);
+        return submitAsync(idGenerator.generateId(), task, Duration.ofMillis(timeUnit.toMillis(timeToLive)));
     }
 
     @Override
     public RExecutorFuture<?> submitAsync(Runnable task) {
-        check(task);
-        RemotePromise<Void> result = (RemotePromise<Void>) asyncService.executeRunnable(createTaskParameters(task)).toCompletableFuture();
-        addListener(result);
-        return createFuture(result);
+        return submitAsync(idGenerator.generateId(), task);
     }
     
-    private void cancelResponseHandling(RequestId requestId) {
+    private void cancelResponseHandling(String requestId) {
         synchronized (responses) {
             ResponseEntry entry = responses.get(responseQueueName);
             if (entry == null) {
@@ -834,10 +825,7 @@ public class RedissonExecutorService implements RScheduledExecutorService {
     
     @Override
     public RScheduledFuture<?> schedule(Runnable task, long delay, TimeUnit unit) {
-        RedissonScheduledFuture<?> future = (RedissonScheduledFuture<?>) scheduleAsync(task, delay, unit);
-        RemotePromise<?> rp = future.getInnerPromise();
-        syncExecute(rp);
-        return future;
+        return schedule(idGenerator.generateId(), task, Duration.ofMillis(unit.toMillis(delay)));
     }
 
     private <T> RExecutorFuture<T> createFuture(RemotePromise<T> promise) {
@@ -852,7 +840,7 @@ public class RedissonExecutorService implements RScheduledExecutorService {
         return f;
     }
     
-    private void storeReference(RExecutorFuture<?> future, RequestId requestId) {
+    private void storeReference(RExecutorFuture<?> future, String requestId) {
         while (true) {
             RedissonExecutorFutureReference r = (RedissonExecutorFutureReference) referenceDueue.poll();
             if (r == null) {
@@ -872,174 +860,85 @@ public class RedissonExecutorService implements RScheduledExecutorService {
     
     @Override
     public RScheduledFuture<?> scheduleAsync(Runnable task, long delay, TimeUnit unit) {
-        return scheduleAsync(task, delay, unit, 0, null);
+        return scheduleAsync(idGenerator.generateId(), task, Duration.ofMillis(unit.toMillis(delay)));
     }
     
     @Override
     public <V> RScheduledFuture<V> schedule(Callable<V> task, long delay, TimeUnit unit) {
-        RedissonScheduledFuture<V> future = (RedissonScheduledFuture<V>) scheduleAsync(task, delay, unit);
-        RemotePromise<?> rp = future.getInnerPromise();
-        syncExecute(rp);
-        return future;
+        return schedule(idGenerator.generateId(), task, Duration.ofMillis(unit.toMillis(delay)));
     }
     
     @Override
     public <V> RScheduledFuture<V> scheduleAsync(Callable<V> task, long delay, TimeUnit unit) {
-        return scheduleAsync(task, delay, unit, 0, null);
+        return scheduleAsync(idGenerator.generateId(), task, Duration.ofMillis(unit.toMillis(delay)));
     }
 
     @Override
     public RScheduledFuture<?> schedule(Runnable command, long delay, TimeUnit unit, long ttl, TimeUnit ttlUnit) {
-        RedissonScheduledFuture<?> future = (RedissonScheduledFuture<?>) scheduleAsync(command, delay, unit, ttl, ttlUnit);
-        RemotePromise<?> rp = future.getInnerPromise();
-        syncExecute(rp);
-        return future;
+        return schedule(idGenerator.generateId(), command, Duration.ofMillis(unit.toMillis(delay)), Duration.ofMillis(ttlUnit.toMillis(ttl)));
     }
 
     @Override
     public RScheduledFuture<?> scheduleAsync(Runnable task, long delay, TimeUnit unit, long timeToLive, TimeUnit ttlUnit) {
-        check(task);
-        ClassBody classBody = getClassBody(task);
-        byte[] state = encode(task);
-        long startTime = System.currentTimeMillis() + unit.toMillis(delay);
-        ScheduledParameters params = new ScheduledParameters(classBody.getClazzName(), classBody.getClazz(), classBody.getLambda(), state, startTime);
-        if (timeToLive > 0) {
-            params.setTtl(ttlUnit.toMillis(timeToLive));
-        }
-        RemotePromise<Void> result = (RemotePromise<Void>) asyncScheduledService.scheduleRunnable(params).toCompletableFuture();
-        addListener(result);
-        return createFuture(result, startTime);
+        return scheduleAsync(idGenerator.generateId(), task, Duration.ofMillis(unit.toMillis(delay)), Duration.ofMillis(ttlUnit.toMillis(timeToLive)));
     }
 
     @Override
     public <V> RScheduledFuture<V> schedule(Callable<V> callable, long delay, TimeUnit unit, long timeToLive, TimeUnit ttlUnit) {
-        RedissonScheduledFuture<V> future = (RedissonScheduledFuture<V>) scheduleAsync(callable, delay, unit, timeToLive, ttlUnit);
-        RemotePromise<?> rp = future.getInnerPromise();
-        syncExecute(rp);
-        return future;
+        return schedule(idGenerator.generateId(), callable, Duration.ofMillis(unit.toMillis(delay)), Duration.ofMillis(ttlUnit.toMillis(timeToLive)));
     }
 
     @Override
     public <V> RScheduledFuture<V> scheduleAsync(Callable<V> task, long delay, TimeUnit unit, long timeToLive, TimeUnit ttlUnit) {
-        check(task);
-        ClassBody classBody = getClassBody(task);
-        byte[] state = encode(task);
-        long startTime = System.currentTimeMillis() + unit.toMillis(delay);
-        ScheduledParameters params = new ScheduledParameters(classBody.getClazzName(), classBody.getClazz(), classBody.getLambda(), state, startTime);
-        if (timeToLive > 0) {
-            params.setTtl(ttlUnit.toMillis(timeToLive));
+        return scheduleAsync(idGenerator.generateId(), task, Duration.ofMillis(unit.toMillis(delay)), Duration.ofMillis(ttlUnit.toMillis(timeToLive)));
+    }
+
+    private ScheduledParameters createScheduledParameters(String id, Duration timeToLive, ClassBody classBody, byte[] state, long startTime) {
+        ScheduledParameters params = new ScheduledParameters(id, classBody.getClazzName(), classBody.getClazz(), classBody.getLambda(), state, startTime);
+        if (timeToLive.toMillis() > 0) {
+            params.setTtl(timeToLive.toMillis());
         }
-        RemotePromise<V> result = (RemotePromise<V>) asyncScheduledService.scheduleCallable(params).toCompletableFuture();
-        addListener(result);
-        return createFuture(result, startTime);
+        return params;
     }
 
     @Override
     public RScheduledFuture<?> scheduleAtFixedRate(Runnable task, long initialDelay, long period, TimeUnit unit) {
-        RedissonScheduledFuture<?> future = (RedissonScheduledFuture<?>) scheduleAtFixedRateAsync(task, initialDelay, period, unit);
-        RemotePromise<?> rp = future.getInnerPromise();
-        syncExecute(rp);
-        return future;
+        return scheduleAtFixedRate(idGenerator.generateId(), task, Duration.ofMillis(unit.toMillis(initialDelay)), Duration.ofMillis(unit.toMillis(period)));
     }
     
     @Override
     public RScheduledFuture<?> scheduleAtFixedRateAsync(Runnable task, long initialDelay, long period, TimeUnit unit) {
-        check(task);
-        ClassBody classBody = getClassBody(task);
-        byte[] state = encode(task);
-        long startTime = System.currentTimeMillis() + unit.toMillis(initialDelay);
-        ScheduledAtFixedRateParameters params = new ScheduledAtFixedRateParameters();
-        params.setClassName(classBody.getClazzName());
-        params.setClassBody(classBody.getClazz());
-        params.setLambdaBody(classBody.getLambda());
-        params.setState(state);
-        params.setStartTime(startTime);
-        params.setPeriod(unit.toMillis(period));
-        params.setExecutorId(executorId);
-        RemotePromise<Void> result = (RemotePromise<Void>) asyncScheduledServiceAtFixed.scheduleAtFixedRate(params).toCompletableFuture();
-        addListener(result);
-        return createFuture(result, startTime);
+        return scheduleAtFixedRate(idGenerator.generateId(), task, Duration.ofMillis(unit.toMillis(initialDelay)), Duration.ofMillis(unit.toMillis(period)));
     }
 
     @Override
     public RScheduledFuture<?> schedule(Runnable task, CronSchedule cronSchedule) {
-        RedissonScheduledFuture<?> future = (RedissonScheduledFuture<?>) scheduleAsync(task, cronSchedule);
-        RemotePromise<?> rp = future.getInnerPromise();
-        syncExecute(rp);
-        return future;
+        return schedule(idGenerator.generateId(), task, cronSchedule);
     }
     
     @Override
     public RScheduledFuture<?> scheduleAsync(Runnable task, CronSchedule cronSchedule) {
-        check(task);
-        ClassBody classBody = getClassBody(task);
-        byte[] state = encode(task);
-        ZonedDateTime currentDate = ZonedDateTime.of(LocalDateTime.now(), cronSchedule.getZoneId());
-        ZonedDateTime startDate = cronSchedule.getExpression().nextTimeAfter(currentDate);
-        if (startDate == null) {
-            throw new IllegalArgumentException("Wrong cron expression! Unable to calculate start date");
-        }
-        long startTime = startDate.toInstant().toEpochMilli();
-        
-        ScheduledCronExpressionParameters params = new ScheduledCronExpressionParameters();
-        params.setClassName(classBody.getClazzName());
-        params.setClassBody(classBody.getClazz());
-        params.setLambdaBody(classBody.getLambda());
-        params.setState(state);
-        params.setStartTime(startTime);
-        params.setCronExpression(cronSchedule.getExpression().getExpr());
-        params.setTimezone(cronSchedule.getZoneId().toString());
-        params.setExecutorId(executorId);
-        RemotePromise<Void> result = (RemotePromise<Void>) asyncScheduledServiceAtFixed.schedule(params).toCompletableFuture();
-        addListener(result);
-        RedissonScheduledFuture<Void> f = new RedissonScheduledFuture<Void>(result, startTime) {
-            public long getDelay(TimeUnit unit) {
-                return unit.convert(startDate.toInstant().toEpochMilli() - System.currentTimeMillis(), TimeUnit.MILLISECONDS);
-            };
-        };
-        storeReference(f, result.getRequestId());
-        return f;
+        return scheduleAsync(idGenerator.generateId(), task, cronSchedule);
     }
     
     @Override
     public RScheduledFuture<?> scheduleWithFixedDelay(Runnable task, long initialDelay, long delay, TimeUnit unit) {
-        RedissonScheduledFuture<?> future = (RedissonScheduledFuture<?>) scheduleWithFixedDelayAsync(task, initialDelay, delay, unit);
-        RemotePromise<?> rp = future.getInnerPromise();
-        syncExecute(rp);
-        return future;
+        return scheduleWithFixedDelay(idGenerator.generateId(), task, Duration.ofMillis(unit.toMillis(initialDelay)), Duration.ofMillis(unit.toMillis(delay)));
     }
     
     @Override
     public RScheduledFuture<?> scheduleWithFixedDelayAsync(Runnable task, long initialDelay, long delay, TimeUnit unit) {
-        check(task);
-        ClassBody classBody = getClassBody(task);
-        byte[] state = encode(task);
-        long startTime = System.currentTimeMillis() + unit.toMillis(initialDelay);
-        
-        ScheduledWithFixedDelayParameters params = new ScheduledWithFixedDelayParameters();
-        params.setClassName(classBody.getClazzName());
-        params.setClassBody(classBody.getClazz());
-        params.setLambdaBody(classBody.getLambda());
-        params.setState(state);
-        params.setStartTime(startTime);
-        params.setDelay(unit.toMillis(delay));
-        params.setExecutorId(executorId);
-        RemotePromise<Void> result = (RemotePromise<Void>) asyncScheduledServiceAtFixed.scheduleWithFixedDelay(params).toCompletableFuture();
-        addListener(result);
-        return createFuture(result, startTime);
+        return scheduleWithFixedDelayAsync(idGenerator.generateId(), task, Duration.ofMillis(unit.toMillis(initialDelay)), Duration.ofMillis(unit.toMillis(delay)));
     }
 
     @Override
-    public boolean cancelTask(String taskId) {
+    public Boolean cancelTask(String taskId) {
         return commandExecutor.get(cancelTaskAsync(taskId));
     }
 
     @Override
     public RFuture<Boolean> cancelTaskAsync(String taskId) {
-        if (taskId.startsWith("01")) {
-            return scheduledRemoteService.cancelExecutionAsync(new RequestId(taskId));
-        }
-        return executorRemoteService.cancelExecutionAsync(new RequestId(taskId));
+        return scheduledRemoteService.cancelExecutionAsync(taskId);
     }
 
     private <T> T poll(List<CompletableFuture<?>> futures, long timeout, TimeUnit timeUnit) throws InterruptedException, TimeoutException {
@@ -1115,6 +1014,236 @@ public class RedissonExecutorService implements RScheduledExecutorService {
         }
         List<?> futures = future.getTaskFutures();
         return (List<Future<T>>) futures;
+    }
+
+    @Override
+    public <T> RExecutorFuture<T> submit(String id, Callable<T> task) {
+        RemotePromise<T> promise = (RemotePromise<T>) submitAsync(id, task).toCompletableFuture();
+        syncExecute(promise);
+        return createFuture(promise);
+    }
+
+    @Override
+    public <T> RExecutorFuture<T> submitAsync(String id, Callable<T> task) {
+        check(task);
+        TaskParameters params = createTaskParameters(id, task);
+        RemotePromise<T> result = (RemotePromise<T>) asyncService.executeCallable(params).toCompletableFuture();
+        addListener(result);
+        return createFuture(result);
+    }
+
+    @Override
+    public <T> RExecutorFuture<T> submit(String id, Callable<T> task, Duration timeToLive) {
+        RemotePromise<T> promise = (RemotePromise<T>) submitAsync(id, task, timeToLive).toCompletableFuture();
+        syncExecute(promise);
+        return createFuture(promise);
+    }
+
+    @Override
+    public <T> RExecutorFuture<T> submitAsync(String id, Callable<T> task, Duration timeToLive) {
+        check(task);
+        TaskParameters taskParameters = createTaskParameters(id, task);
+        taskParameters.setTtl(timeToLive.toMillis());
+        RemotePromise<T> result = (RemotePromise<T>) asyncService.executeCallable(taskParameters).toCompletableFuture();
+        addListener(result);
+        return createFuture(result);
+    }
+
+    @Override
+    public RExecutorFuture<?> submit(String id, Runnable task, Duration timeToLive) {
+        RemotePromise<Void> promise = (RemotePromise<Void>) submitAsync(id, task, timeToLive).toCompletableFuture();
+        syncExecute(promise);
+        return createFuture(promise);
+    }
+
+    @Override
+    public RExecutorFuture<?> submitAsync(String id, Runnable task, Duration timeToLive) {
+        check(task);
+        TaskParameters taskParameters = createTaskParameters(id, task);
+        taskParameters.setTtl(timeToLive.toMillis());
+        RemotePromise<Void> result = (RemotePromise<Void>) asyncService.executeRunnable(taskParameters).toCompletableFuture();
+        addListener(result);
+        return createFuture(result);
+    }
+
+    @Override
+    public RExecutorFuture<?> submit(String id, Runnable task) {
+        RemotePromise<Void> promise = (RemotePromise<Void>) submitAsync(id, task).toCompletableFuture();
+        syncExecute(promise);
+        return createFuture(promise);
+    }
+
+    @Override
+    public RExecutorFuture<?> submitAsync(String id, Runnable task) {
+        check(task);
+        RemotePromise<Void> result = (RemotePromise<Void>) asyncService.executeRunnable(createTaskParameters(id, task)).toCompletableFuture();
+        addListener(result);
+        return createFuture(result);
+    }
+
+    @Override
+    public RScheduledFuture<?> schedule(String id, Runnable command, Duration delay) {
+        RedissonScheduledFuture<?> future = (RedissonScheduledFuture<?>) scheduleAsync(id, command, delay);
+        RemotePromise<?> rp = future.getInnerPromise();
+        syncExecute(rp);
+        return future;
+    }
+
+    @Override
+    public RScheduledFuture<?> scheduleAsync(String id, Runnable task, Duration delay) {
+        return scheduleAsync(id, task, delay, Duration.ZERO);
+    }
+
+    @Override
+    public RScheduledFuture<?> schedule(String id, Runnable command, Duration delay, Duration timeToLive) {
+        RedissonScheduledFuture<?> future = (RedissonScheduledFuture<?>) scheduleAsync(id, command, delay, timeToLive);
+        RemotePromise<?> rp = future.getInnerPromise();
+        syncExecute(rp);
+        return future;
+    }
+
+    @Override
+    public RScheduledFuture<?> scheduleAsync(String id, Runnable task, Duration delay, Duration timeToLive) {
+        check(task);
+        ClassBody classBody = getClassBody(task);
+        byte[] state = encode(task);
+        long startTime = System.currentTimeMillis() + delay.toMillis();
+        ScheduledParameters params = createScheduledParameters(id, timeToLive, classBody, state, startTime);
+        RemotePromise<Void> result = (RemotePromise<Void>) asyncScheduledService.scheduleRunnable(params).toCompletableFuture();
+        addListener(result);
+        return createFuture(result, startTime);
+    }
+
+    @Override
+    public <V> RScheduledFuture<V> schedule(String id, Callable<V> callable, Duration delay) {
+        RedissonScheduledFuture<V> future = (RedissonScheduledFuture<V>) scheduleAsync(id, callable, delay);
+        RemotePromise<?> rp = future.getInnerPromise();
+        syncExecute(rp);
+        return future;
+    }
+
+    @Override
+    public <V> RScheduledFuture<V> scheduleAsync(String id, Callable<V> task, Duration delay) {
+        return scheduleAsync(id, task, delay, Duration.ZERO);
+    }
+
+    @Override
+    public <V> RScheduledFuture<V> schedule(String id, Callable<V> callable, Duration delay, Duration timeToLive) {
+        RedissonScheduledFuture<V> future = (RedissonScheduledFuture<V>) scheduleAsync(id, callable, delay, timeToLive);
+        RemotePromise<?> rp = future.getInnerPromise();
+        syncExecute(rp);
+        return future;
+    }
+
+    @Override
+    public <V> RScheduledFuture<V> scheduleAsync(String id, Callable<V> task, Duration delay, Duration timeToLive) {
+        check(task);
+        ClassBody classBody = getClassBody(task);
+        byte[] state = encode(task);
+        long startTime = System.currentTimeMillis() + delay.toMillis();
+        ScheduledParameters params = createScheduledParameters(id, timeToLive, classBody, state, startTime);
+        RemotePromise<V> result = (RemotePromise<V>) asyncScheduledService.scheduleCallable(params).toCompletableFuture();
+        addListener(result);
+        return createFuture(result, startTime);
+    }
+
+    @Override
+    public RScheduledFuture<?> scheduleAtFixedRate(String id, Runnable command, Duration initialDelay, Duration period) {
+        RedissonScheduledFuture<?> future = (RedissonScheduledFuture<?>) scheduleAtFixedRateAsync(id, command, initialDelay, period);
+        RemotePromise<?> rp = future.getInnerPromise();
+        syncExecute(rp);
+        return future;
+    }
+
+    @Override
+    public RScheduledFuture<?> scheduleAtFixedRateAsync(String id, Runnable task, Duration initialDelay, Duration period) {
+        check(task);
+        ClassBody classBody = getClassBody(task);
+        byte[] state = encode(task);
+        long startTime = System.currentTimeMillis() + initialDelay.toMillis();
+
+        String taskId = id;
+        ScheduledAtFixedRateParameters params = new ScheduledAtFixedRateParameters(taskId);
+        params.setClassName(classBody.getClazzName());
+        params.setClassBody(classBody.getClazz());
+        params.setLambdaBody(classBody.getLambda());
+        params.setState(state);
+        params.setStartTime(startTime);
+        params.setPeriod(period.toMillis());
+        params.setExecutorId(executorId);
+        RemotePromise<Void> result = (RemotePromise<Void>) asyncScheduledServiceAtFixed.scheduleAtFixedRate(params).toCompletableFuture();
+        addListener(result);
+        return createFuture(result, startTime);
+    }
+
+    @Override
+    public RScheduledFuture<?> scheduleWithFixedDelay(String id, Runnable command, Duration initialDelay, Duration delay) {
+        RedissonScheduledFuture<?> future = (RedissonScheduledFuture<?>) scheduleWithFixedDelayAsync(id, command, initialDelay, delay);
+        RemotePromise<?> rp = future.getInnerPromise();
+        syncExecute(rp);
+        return future;
+    }
+
+    @Override
+    public RScheduledFuture<?> scheduleWithFixedDelayAsync(String id, Runnable task, Duration initialDelay, Duration delay) {
+        check(task);
+        ClassBody classBody = getClassBody(task);
+        byte[] state = encode(task);
+        long startTime = System.currentTimeMillis() + initialDelay.toMillis();
+
+        String taskId = id;
+        ScheduledWithFixedDelayParameters params = new ScheduledWithFixedDelayParameters(taskId);
+        params.setClassName(classBody.getClazzName());
+        params.setClassBody(classBody.getClazz());
+        params.setLambdaBody(classBody.getLambda());
+        params.setState(state);
+        params.setStartTime(startTime);
+        params.setDelay(delay.toMillis());
+        params.setExecutorId(executorId);
+        RemotePromise<Void> result = (RemotePromise<Void>) asyncScheduledServiceAtFixed.scheduleWithFixedDelay(params).toCompletableFuture();
+        addListener(result);
+        return createFuture(result, startTime);
+    }
+
+    @Override
+    public RScheduledFuture<?> schedule(String id, Runnable task, CronSchedule cronSchedule) {
+        RedissonScheduledFuture<?> future = (RedissonScheduledFuture<?>) scheduleAsync(id, task, cronSchedule);
+        RemotePromise<?> rp = future.getInnerPromise();
+        syncExecute(rp);
+        return future;
+    }
+
+    @Override
+    public RScheduledFuture<?> scheduleAsync(String id, Runnable task, CronSchedule cronSchedule) {
+        check(task);
+        ClassBody classBody = getClassBody(task);
+        byte[] state = encode(task);
+        ZonedDateTime currentDate = ZonedDateTime.of(LocalDateTime.now(), cronSchedule.getZoneId());
+        ZonedDateTime startDate = cronSchedule.getExpression().nextTimeAfter(currentDate);
+        if (startDate == null) {
+            throw new IllegalArgumentException("Wrong cron expression! Unable to calculate start date");
+        }
+        long startTime = startDate.toInstant().toEpochMilli();
+
+        String taskId = id;
+        ScheduledCronExpressionParameters params = new ScheduledCronExpressionParameters(taskId);
+        params.setClassName(classBody.getClazzName());
+        params.setClassBody(classBody.getClazz());
+        params.setLambdaBody(classBody.getLambda());
+        params.setState(state);
+        params.setStartTime(startTime);
+        params.setCronExpression(cronSchedule.getExpression().getExpr());
+        params.setTimezone(cronSchedule.getZoneId().toString());
+        params.setExecutorId(executorId);
+        RemotePromise<Void> result = (RemotePromise<Void>) asyncScheduledServiceAtFixed.schedule(params).toCompletableFuture();
+        addListener(result);
+        RedissonScheduledFuture<Void> f = new RedissonScheduledFuture<Void>(result, startTime) {
+            public long getDelay(TimeUnit unit) {
+                return unit.convert(startDate.toInstant().toEpochMilli() - System.currentTimeMillis(), TimeUnit.MILLISECONDS);
+            };
+        };
+        storeReference(f, result.getRequestId());
+        return f;
     }
 
 }

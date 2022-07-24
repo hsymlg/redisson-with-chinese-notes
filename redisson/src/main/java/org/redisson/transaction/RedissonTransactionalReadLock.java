@@ -13,37 +13,28 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.redisson.executor.params;
+package org.redisson.transaction;
+
+import org.redisson.RedissonReadLock;
+import org.redisson.command.CommandAsyncExecutor;
 
 /**
  * 
  * @author Nikita Koksharov
  *
  */
-public class ScheduledWithFixedDelayParameters extends ScheduledParameters {
+public class RedissonTransactionalReadLock extends RedissonReadLock {
 
-    private long delay; 
-    private String executorId;
+    private final String transactionId;
 
-    public ScheduledWithFixedDelayParameters() {
-    }
-
-    public ScheduledWithFixedDelayParameters(String requestId) {
-        super(requestId);
-    }
-
-    public long getDelay() {
-        return delay;
-    }
-    public void setDelay(long delay) {
-        this.delay = delay;
+    public RedissonTransactionalReadLock(CommandAsyncExecutor commandExecutor, String name, String transactionId) {
+        super(commandExecutor, name);
+        this.transactionId = transactionId;
     }
     
-    public String getExecutorId() {
-        return executorId;
-    }
-    public void setExecutorId(String executorId) {
-        this.executorId = executorId;
+    @Override
+    protected String getLockName(long threadId) {
+        return super.getLockName(threadId) + ":" + transactionId;
     }
     
 }

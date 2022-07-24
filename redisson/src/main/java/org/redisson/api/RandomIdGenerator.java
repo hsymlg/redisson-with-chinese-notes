@@ -13,37 +13,25 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.redisson.executor.params;
+package org.redisson.api;
+
+import io.netty.buffer.ByteBufUtil;
+
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
- * 
+ * Random identifier
+ *
  * @author Nikita Koksharov
  *
  */
-public class ScheduledWithFixedDelayParameters extends ScheduledParameters {
+public class RandomIdGenerator implements IdGenerator {
 
-    private long delay; 
-    private String executorId;
-
-    public ScheduledWithFixedDelayParameters() {
-    }
-
-    public ScheduledWithFixedDelayParameters(String requestId) {
-        super(requestId);
+    @Override
+    public String generateId() {
+        byte[] id = new byte[16];
+        ThreadLocalRandom.current().nextBytes(id);
+        return ByteBufUtil.hexDump(id);
     }
 
-    public long getDelay() {
-        return delay;
-    }
-    public void setDelay(long delay) {
-        this.delay = delay;
-    }
-    
-    public String getExecutorId() {
-        return executorId;
-    }
-    public void setExecutorId(String executorId) {
-        this.executorId = executorId;
-    }
-    
 }

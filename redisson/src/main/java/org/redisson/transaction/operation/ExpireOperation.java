@@ -15,46 +15,74 @@
  */
 package org.redisson.transaction.operation;
 
-import org.redisson.RedissonKeys;
+import org.redisson.RedissonBucket;
 import org.redisson.RedissonLock;
-import org.redisson.api.RKeys;
+import org.redisson.api.RFuture;
 import org.redisson.command.CommandAsyncExecutor;
 import org.redisson.transaction.RedissonTransactionalLock;
 import org.redisson.transaction.RedissonTransactionalWriteLock;
+
+import java.util.concurrent.TimeUnit;
 
 /**
  * 
  * @author Nikita Koksharov
  *
  */
-public class DeleteOperation extends TransactionalOperation {
+public class ExpireOperation extends TransactionalOperation {
+
+    public static final class RedissonBucketExtended extends RedissonBucket {
+
+        public RedissonBucketExtended(CommandAsyncExecutor connectionManager, String name) {
+            super(connectionManager, name);
+        }
+
+        @Override
+        public RFuture<Boolean> expireAsync(long timeToLive, TimeUnit timeUnit, String param, String... keys) {
+            return super.expireAsync(timeToLive, timeUnit, param, keys);
+        }
+    }
 
     private String writeLockName;
     private String lockName;
     private String transactionId;
+    private long timeToLive;
+    private TimeUnit timeUnit;
+    private String param;
+    private String[] keys;
 
-    public DeleteOperation(String name) {
-        this(name, null, null, 0);
+    public ExpireOperation(String name) {
+        this(name, null, 0, null, 0, null, null, (String[]) null);
     }
-    
-    public DeleteOperation(String name, String lockName, String transactionId, long threadId) {
+
+    public ExpireOperation(String name, String lockName, long threadId, String transactionId, long timeToLive, TimeUnit timeUnit, String param, String... keys) {
         super(name, null, threadId);
         this.lockName = lockName;
         this.transactionId = transactionId;
+        this.timeToLive = timeToLive;
+        this.timeUnit = timeUnit;
+        this.param = param;
+        this.keys = keys;
     }
 
-    public DeleteOperation(String name, String lockName, String writeLockName, String transactionId, long threadId) {
-        this(name, lockName, transactionId, threadId);
+    public ExpireOperation(String name, String lockName, String writeLockName, long threadId, String transactionId, long timeToLive, TimeUnit timeUnit, String param, String... keys) {
+        super(name, null, threadId);
+        this.lockName = lockName;
+        this.transactionId = transactionId;
+        this.timeToLive = timeToLive;
+        this.timeUnit = timeUnit;
+        this.param = param;
+        this.keys = keys;
         this.writeLockName = writeLockName;
     }
 
     @Override
     public void commit(CommandAsyncExecutor commandExecutor) {
-        RKeys keys = new RedissonKeys(commandExecutor);
-        keys.deleteAsync(getName());
+        RedissonBucketExtended bucket = new RedissonBucketExtended(commandExecutor, name);
+        bucket.expireAsync(timeToLive, timeUnit, param, keys);
         if (lockName != null) {
             RedissonLock lock = new RedissonTransactionalLock(commandExecutor, lockName, transactionId);
-            lock.unlockAsync();
+            lock.unlockAsync(getThreadId());
         }
         if (writeLockName != null) {
             RedissonLock lock = new RedissonTransactionalWriteLock(commandExecutor, writeLockName, transactionId);
@@ -66,7 +94,7 @@ public class DeleteOperation extends TransactionalOperation {
     public void rollback(CommandAsyncExecutor commandExecutor) {
         if (lockName != null) {
             RedissonLock lock = new RedissonTransactionalLock(commandExecutor, lockName, transactionId);
-            lock.unlockAsync();
+            lock.unlockAsync(getThreadId());
         }
         if (writeLockName != null) {
             RedissonLock lock = new RedissonTransactionalWriteLock(commandExecutor, writeLockName, transactionId);

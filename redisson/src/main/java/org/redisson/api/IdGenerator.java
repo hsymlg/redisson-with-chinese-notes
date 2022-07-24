@@ -13,37 +13,30 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.redisson.executor.params;
+package org.redisson.api;
 
 /**
- * 
+ * Identifier generator
+ *
  * @author Nikita Koksharov
  *
  */
-public class ScheduledWithFixedDelayParameters extends ScheduledParameters {
+public interface IdGenerator {
 
-    private long delay; 
-    private String executorId;
+    /**
+     * Generates identifier
+     *
+     * @return identifier
+     */
+    String generateId();
 
-    public ScheduledWithFixedDelayParameters() {
+    /**
+     * Returns random identifier generator. Used by default.
+     *
+     * @return random identifier generator
+     */
+    static IdGenerator random() {
+        return new RandomIdGenerator();
     }
 
-    public ScheduledWithFixedDelayParameters(String requestId) {
-        super(requestId);
-    }
-
-    public long getDelay() {
-        return delay;
-    }
-    public void setDelay(long delay) {
-        this.delay = delay;
-    }
-    
-    public String getExecutorId() {
-        return executorId;
-    }
-    public void setExecutorId(String executorId) {
-        this.executorId = executorId;
-    }
-    
 }
