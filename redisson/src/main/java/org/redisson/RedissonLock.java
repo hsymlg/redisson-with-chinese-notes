@@ -100,6 +100,7 @@ public class RedissonLock extends RedissonBaseLock {
      * 通过interruptibly参数配置支持中断
      */
     private void lock(long leaseTime, TimeUnit unit, boolean interruptibly) throws InterruptedException {
+        //
         long threadId = Thread.currentThread().getId();
         // 尝试获取锁，返回的ttl为空代表获取锁成功，返回的ttl代表已经存在的KEY的剩余存活时间
         Long ttl = tryAcquire(-1, leaseTime, unit, threadId);
